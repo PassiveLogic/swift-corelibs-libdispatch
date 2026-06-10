@@ -6,12 +6,7 @@ elseif(WIN32)
   # so that we can use __popcnt64
   add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-fms-extensions>)
 else()
-  # WASI port bring-up: the single-threaded config leaves some warnings (unused
-  # pool/thread vars, etc.). Don't treat warnings as errors while porting.
-  # TODO: re-enable -Werror once the WASI port is warning-clean.
-  if(NOT DISPATCH_WASI)
-    add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-Werror>)
-  endif()
+  add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-Werror>)
   add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-Wall>)
   add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-Wextra>)
 
