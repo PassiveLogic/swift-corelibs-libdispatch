@@ -23,7 +23,22 @@
 #include <libutil.h>
 #include <fcntl.h>
 #endif
+#if defined(__wasi__)
+// wasi-libc's <sys/param.h> pulls <endian.h>, whose __bswap* inline funcs are
+// redefined inside the Swift clang importer's CDispatch module (the header
+// belongs to the SDK libc module too). Avoid it here; provide MIN/MAX directly.
+#ifndef MIN
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#endif
+#ifndef MAX
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#endif
+#ifndef howmany
+#define howmany(x, y) (((x) + ((y) - 1)) / (y))
+#endif
+#else
 #include <sys/param.h>
+#endif
 
 #if __has_include(<sys/cdefs.h>)
 #include <sys/cdefs.h>
