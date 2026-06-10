@@ -268,6 +268,13 @@ upcast(dispatch_object_t dou)
 
 #if defined(_WIN32)
 #include <time.h>
+#elif defined(__wasi__)
+// wasi-libc lacks sys/mount.h, sys/sysctl.h, sys/queue.h (queue macros come from
+// shims/generic_sys_queue.h via shims.h, as on Linux).
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/mman.h>
+#include <netinet/in.h>
 #else
 #include <sys/mount.h>
 #ifdef __ANDROID__
@@ -327,6 +334,10 @@ __BEGIN_DECLS
 
 /* SPI for Libsystem-internal use */
 DISPATCH_EXPORT DISPATCH_NOTHROW void libdispatch_init(void);
+#if defined(__wasi__)
+// Cooperative single-threaded run loop entered by dispatch_main() (see event_wasi.c).
+DISPATCH_NORETURN void _dispatch_wasi_runloop_main(void);
+#endif
 #if !defined(_WIN32)
 DISPATCH_EXPORT DISPATCH_NOTHROW void dispatch_atfork_prepare(void);
 DISPATCH_EXPORT DISPATCH_NOTHROW void dispatch_atfork_parent(void);
@@ -506,7 +517,7 @@ void _dispatch_abort(size_t line, uintptr_t val);
 #endif
 #endif // DISPATCH_USE_SIMPLE_ASL
 
-#if !DISPATCH_USE_SIMPLE_ASL && !DISPATCH_USE_OS_DEBUG_LOG && !defined(_WIN32)
+#if !DISPATCH_USE_SIMPLE_ASL && !DISPATCH_USE_OS_DEBUG_LOG && !defined(_WIN32) && !defined(__wasi__)
 #include <syslog.h>
 #endif
 
@@ -712,6 +723,13 @@ _dispatch_fork_becomes_unsafe(void)
 #define DISPATCH_USE_PTHREAD_ROOT_QUEUES 0
 #endif
 #endif // !defined(DISPATCH_USE_PTHREAD_ROOT_QUEUES)
+
+#if defined(__wasi__)
+// Single-threaded cooperative port: force no worker-thread pool. dispatch_main()
+// -> _dispatch_wasi_runloop_main drains root queues inline; root-queue poke is a
+// no-op. (INTERNAL_WORKQUEUE stays 1 so the manager-queue plumbing is consistent.)
+#define DISPATCH_USE_PTHREAD_POOL 0
+#endif
 
 #ifndef DISPATCH_USE_PTHREAD_POOL
 #if DISPATCH_USE_PTHREAD_ROOT_QUEUES || DISPATCH_USE_INTERNAL_WORKQUEUE

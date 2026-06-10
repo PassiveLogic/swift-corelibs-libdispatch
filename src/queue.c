@@ -5707,9 +5707,9 @@ DISPATCH_NOINLINE
 static void
 _dispatch_root_queue_poke_slow(dispatch_queue_global_t dq, int n, int floor)
 {
-	int remaining = n;
+	int remaining DISPATCH_UNUSED = n;
 #if !defined(_WIN32)
-	int r = ENOSYS;
+	int r DISPATCH_UNUSED = ENOSYS;
 #endif
 
 	_dispatch_root_queues_init();
@@ -7113,7 +7113,7 @@ _dispatch_main_queue_wakeup(dispatch_queue_main_t dq, dispatch_qos_t qos,
 	return _dispatch_lane_wakeup(dq, qos, flags);
 }
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__wasi__)
 DISPATCH_NOINLINE DISPATCH_NORETURN
 static void
 _dispatch_sigsuspend(void)
@@ -7135,6 +7135,8 @@ _dispatch_sig_thread(void *ctxt DISPATCH_UNUSED)
 #if defined(_WIN32)
 	Sleep(INFINITE);
 	__builtin_unreachable();
+#elif defined(__wasi__)
+	abort();
 #else
 	_dispatch_sigsuspend();
 #endif
@@ -7162,7 +7164,9 @@ dispatch_main(void)
 		pthread_setspecific(dispatch_main_key, &dispatch_main_key);
 		_dispatch_sigmask();
 #endif
-#if !defined(_WIN32)
+#if defined(__wasi__)
+		_dispatch_wasi_runloop_main(); // NORETURN: cooperative blocking run loop
+#elif !defined(_WIN32)
 		pthread_exit(NULL);
 #else
 		_endthreadex(0);
@@ -7173,6 +7177,40 @@ dispatch_main(void)
 	DISPATCH_CLIENT_CRASH(0, "dispatch_main() must be called on the main thread");
 #endif
 }
+
+#if defined(__wasi__)
+// Cooperative single-threaded run loop entered by dispatch_main(). There are no
+// worker threads and no manager thread, so this one thread drains everything:
+// the manager queue (timer/source admin), expired timers, and every root queue,
+// then blocks on the WASI event backend until the next timer deadline.
+DISPATCH_NORETURN
+void
+_dispatch_wasi_runloop_main(void)
+{
+	for (;;) {
+		// 1. Manager admin: process timer/source arm/disarm requests.
+		_dispatch_mgr_queue_drain();
+		// 2. Fire expired timers -> enqueue handlers onto their target queues.
+		_dispatch_event_loop_drain_anon_timers();
+		// 3. Drain all root (global concurrent) queues; no worker threads exist.
+		bool did_work = false;
+		for (size_t i = 0; i < DISPATCH_ROOT_QUEUE_COUNT; i++) {
+			dispatch_queue_global_t rq = &_dispatch_root_queues[i];
+			if (_dispatch_queue_class_probe(rq)) {
+				_dispatch_root_queue_drain(rq, rq->dq_priority,
+						DISPATCH_INVOKE_REDIRECTING_DRAIN);
+				did_work = true;
+			}
+		}
+		// 4. If anything ran it may have armed timers or enqueued more work, so
+		//    re-check before sleeping.
+		if (did_work) continue;
+		if (_dispatch_queue_class_probe(&_dispatch_mgr_q)) continue;
+		// 5. Block until the next timer deadline, then loop.
+		_dispatch_event_loop_drain(0);
+	}
+}
+#endif // __wasi__
 
 DISPATCH_NOINLINE
 static void
@@ -7271,7 +7309,10 @@ static void
 _dispatch_root_queues_init_once(void *context DISPATCH_UNUSED)
 {
 	_dispatch_fork_becomes_unsafe();
-#if DISPATCH_USE_INTERNAL_WORKQUEUE
+#if defined(__wasi__)
+	// cooperative single-threaded: no worker pool to initialize; the run loop
+	// drains the root queues directly.
+#elif DISPATCH_USE_INTERNAL_WORKQUEUE
 	size_t i;
 	for (i = 0; i < DISPATCH_ROOT_QUEUE_COUNT; i++) {
 		_dispatch_root_queue_init_pthread_pool(&_dispatch_root_queues[i], 0,
@@ -7440,6 +7481,13 @@ static inline DWORD
 _gettid(void)
 {
 	return GetCurrentThreadId();
+}
+#elif defined(__wasi__)
+DISPATCH_ALWAYS_INLINE
+static inline pid_t
+_gettid(void)
+{
+	return 1; // single-threaded wasi: one thread, constant nonzero tid
 }
 #else
 #error "SYS_gettid unavailable on this system"

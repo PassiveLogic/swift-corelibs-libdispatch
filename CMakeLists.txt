@@ -86,6 +86,16 @@ int main(int argc, char *argv[]) {
   endif()
 endif()
 
+# --- WebAssembly / WASI (single-threaded cooperative port) ---
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  set(DISPATCH_WASI ON)
+  # wasi-libc hides signal/mman/getpid/clock decls behind these emulation macros.
+  add_compile_definitions(_WASI_EMULATED_SIGNAL _WASI_EMULATED_MMAN
+    _WASI_EMULATED_GETPID _WASI_EMULATED_PROCESS_CLOCKS)
+  # Bring-up: relax the very strict -Werror set while porting (TODO: re-enable).
+  add_compile_options(-Wno-error)
+endif()
+
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED YES)
 

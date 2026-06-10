@@ -41,6 +41,8 @@ getprogname(void)
 	return program_invocation_short_name;
 # elif defined(__ANDROID__)
 	return __progname;
+# elif defined(__wasi__)
+	return (char *)"wasm";
 # else
 #   error getprogname(3) is not available on this platform
 # endif

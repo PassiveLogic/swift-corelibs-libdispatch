@@ -67,7 +67,7 @@ _dispatch_thread_switch(dispatch_lock value, dispatch_lock_options_t flags,
   sched_yield();
 }
 #endif // HAVE_UL_UNFAIR_LOCK
-#elif defined(__unix__)
+#elif defined(__unix__) || defined(__wasi__)
 #if !HAVE_UL_UNFAIR_LOCK && !HAVE_FUTEX_PI
 DISPATCH_ALWAYS_INLINE
 static inline void
@@ -337,6 +337,38 @@ _dispatch_sema4_timedwait(_dispatch_sema4_t *sema, dispatch_time_t timeout)
 	_pop_timer_resolution(resolution);
 	return wait_result == WAIT_TIMEOUT;
 }
+#elif defined(__wasi__)
+
+void
+_dispatch_sema4_dispose_slow(_dispatch_sema4_t *sema, int policy)
+{
+	(void)sema; (void)policy;
+}
+
+void
+_dispatch_sema4_signal(_dispatch_sema4_t *sema, long count)
+{
+	// Single-threaded: nothing is ever blocked waiting, so signalling is a no-op.
+	(void)sema; (void)count;
+}
+
+void
+_dispatch_sema4_wait(_dispatch_sema4_t *sema)
+{
+	(void)sema;
+	DISPATCH_CLIENT_CRASH(0, "Blocking wait (dispatch_sync / semaphore / group) "
+			"is unsupported on single-threaded WebAssembly");
+}
+
+bool
+_dispatch_sema4_timedwait(_dispatch_sema4_t *sema, dispatch_time_t timeout)
+{
+	// Cannot block on single-threaded wasm; report timeout so a timed wait
+	// (e.g. dispatch_semaphore_wait with a deadline) degrades gracefully.
+	(void)sema; (void)timeout;
+	return true;
+}
+
 #else
 #error "port has to implement _dispatch_sema4_t"
 #endif
@@ -560,6 +592,11 @@ _dispatch_wait_on_address(uint32_t volatile *_address, uint32_t value,
 		return _umtx_op((void*)address, UMTX_OP_WAIT_UINT, value, (void*)(uintptr_t)sizeof(struct timespec), (void*)&ts);
 	}
 	return _umtx_op((void*)address, UMTX_OP_WAIT_UINT, value, 0, 0);
+#elif defined(__wasi__)
+	// Single-threaded: no other thread can change *address, so a real wait would
+	// block forever. Report timeout; callers re-check the value and proceed.
+	(void)address; (void)value; (void)nsecs; (void)flags;
+	return ETIMEDOUT;
 #else
 #error _dispatch_wait_on_address unimplemented for this platform
 #endif

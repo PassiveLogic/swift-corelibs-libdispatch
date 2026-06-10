@@ -34,7 +34,7 @@
 #include <os/base.h>
 #elif defined(_WIN32)
 #include <os/generic_win_base.h>
-#elif defined(__unix__)
+#elif (defined(__unix__) || defined(__wasi__))
 #include <os/generic_unix_base.h>
 #endif
 
@@ -43,7 +43,7 @@
 #include <mach/mach.h>
 #include <mach/message.h>
 #endif
-#if defined(__unix__) || (defined(__APPLE__) && defined(__MACH__))
+#if (defined(__unix__) || defined(__wasi__)) || (defined(__APPLE__) && defined(__MACH__))
 #include <unistd.h>
 #endif
 #if !defined(_WIN32)
@@ -191,7 +191,7 @@ void _dispatch_prohibit_transition_to_multithreaded(bool prohibit);
 typedef mach_port_t dispatch_runloop_handle_t;
 #elif defined(__linux__)
 typedef int dispatch_runloop_handle_t;
-#elif defined(__unix__)
+#elif (defined(__unix__) || defined(__wasi__))
 typedef uint64_t dispatch_runloop_handle_t;
 #elif defined(_WIN32)
 typedef void *dispatch_runloop_handle_t;

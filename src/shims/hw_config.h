@@ -183,6 +183,9 @@ _dispatch_hw_get_config(_dispatch_hw_config_t c)
 	case _dispatch_hw_config_physical_cpus:
 		return dwProcessorPhysicalCount;
 	}
+#elif defined(__wasi__)
+	(void)c;
+	return 1; // single-threaded WebAssembly: one logical CPU
 #else
 	const char *name = NULL;
 	int r;

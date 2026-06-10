@@ -141,6 +141,25 @@ _dispatch_lock_owner(dispatch_lock lock_value)
   return lock_value & DLOCK_OWNER_MASK;
 }
 
+#elif defined(__wasi__)
+
+typedef uint32_t dispatch_tid;
+typedef uint32_t dispatch_lock;
+
+#define DLOCK_OWNER_NULL			((dispatch_tid)0)
+#define DLOCK_OWNER_MASK			((dispatch_lock)0xfffffffc)
+#define DLOCK_WAITERS_BIT			((dispatch_lock)0x00000001)
+#define DLOCK_FAILED_TRYLOCK_BIT	((dispatch_lock)0x00000002)
+
+#define _dispatch_tid_self()		((dispatch_tid)(_dispatch_get_tsd_base()->tid))
+
+DISPATCH_ALWAYS_INLINE
+static inline dispatch_tid
+_dispatch_lock_owner(dispatch_lock lock_value)
+{
+	return lock_value & DLOCK_OWNER_MASK;
+}
+
 #else
 #  error define _dispatch_lock encoding scheme for your platform here
 #endif
@@ -260,6 +279,20 @@ typedef HANDLE _dispatch_sema4_t;
 #define _DSEMA4_TIMEOUT() ((errno) = ETIMEDOUT, -1)
 
 void _dispatch_sema4_init(_dispatch_sema4_t *sema, int policy);
+#define _dispatch_sema4_is_created(sema)   ((void)sema, 1)
+#define _dispatch_sema4_create_slow(sema, policy) ((void)sema, (void)policy)
+
+#elif defined(__wasi__)
+
+// Single-threaded wasi: no OS semaphore. dispatch_semaphore/dispatch_group fast
+// paths are pure atomics and work; the slow path (which would block) traps in
+// lock.c — a single-threaded wasm cannot block-and-be-woken.
+typedef uint32_t _dispatch_sema4_t;
+#define _DSEMA4_POLICY_FIFO 0
+#define _DSEMA4_POLICY_LIFO 0
+#define _DSEMA4_TIMEOUT() ((errno) = ETIMEDOUT, -1)
+
+#define _dispatch_sema4_init(sema, policy) (void)(*(sema) = 0)
 #define _dispatch_sema4_is_created(sema)   ((void)sema, 1)
 #define _dispatch_sema4_create_slow(sema, policy) ((void)sema, (void)policy)
 

@@ -24,6 +24,11 @@
 #include <fcntl.h>
 #endif
 
+#if defined(__wasi__)
+// wasi has no device numbers; DispatchIO disk grouping is inert on wasi.
+#define major(dev) ((int)0)
+#endif
+
 #ifndef DISPATCH_IO_DEBUG
 #define DISPATCH_IO_DEBUG DISPATCH_DEBUG
 #endif

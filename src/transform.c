@@ -33,9 +33,13 @@
 #elif defined(_WIN32)
 #define OSLittleEndian 1234
 #define OSBigEndian 4321
+#elif defined(__wasi__)
+#include <endian.h>
+#define OSLittleEndian __LITTLE_ENDIAN
+#define OSBigEndian __BIG_ENDIAN
 #endif
 
-#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__)
+#if defined(__linux__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__wasi__)
 #define OSSwapLittleToHostInt16 le16toh
 #define OSSwapBigToHostInt16 be16toh
 #define OSSwapHostToLittleInt16 htole16

@@ -90,6 +90,9 @@ dispatch_atfork_child(void)
 int
 _dispatch_sigmask(void)
 {
+#if defined(__wasi__)
+	return 0; // no signals / no per-thread signal masking on wasi
+#else
 	sigset_t mask;
 	int r = 0;
 
@@ -108,6 +111,7 @@ _dispatch_sigmask(void)
 	r |= sigdelset(&mask, SIGPROF);
 	r |= pthread_sigmask(SIG_BLOCK, &mask, NULL);
 	return dispatch_assume_zero(r);
+#endif // __wasi__
 }
 #endif
 
@@ -291,13 +295,13 @@ struct dispatch_queue_static_s _dispatch_mgr_q = {
 	.dq_serialnum = 2,
 };
 
-#if DISPATCH_USE_INTERNAL_WORKQUEUE
+#if DISPATCH_USE_INTERNAL_WORKQUEUE && DISPATCH_USE_PTHREAD_POOL
 static struct dispatch_pthread_root_queue_context_s
 		_dispatch_pthread_root_queue_contexts[DISPATCH_ROOT_QUEUE_COUNT];
 #define _dispatch_root_queue_ctxt(n) &_dispatch_pthread_root_queue_contexts[n]
 #else
 #define _dispatch_root_queue_ctxt(n) NULL
-#endif // DISPATCH_USE_INTERNAL_WORKQUEUE
+#endif // DISPATCH_USE_INTERNAL_WORKQUEUE && DISPATCH_USE_PTHREAD_POOL
 
 // 6618342 Contact the team that owns the Instrument DTrace probe before
 //         renaming this symbol
@@ -886,12 +890,17 @@ _dispatch_get_build(void)
 	return _dispatch_build;
 }
 
+#if defined(__wasi__)
+// wasm clang lacks __builtin_return_address; skip call-site dedup of bug logs.
+#define _dispatch_bug_log_is_repeated() (false)
+#else
 #define _dispatch_bug_log_is_repeated() ({ \
 		static void *last_seen; \
 		void *previous = last_seen; \
 		last_seen =__builtin_return_address(0); \
 		last_seen == previous; \
 	})
+#endif
 
 #if HAVE_OS_FAULT_WITH_PAYLOAD
 __attribute__((__format__(__printf__,2,3)))
@@ -1250,6 +1259,19 @@ _dispatch_vsyslog(const char *msg, va_list ap)
   _dispatch_syslog(buffer);
 
   free(buffer);
+}
+#elif defined(__wasi__)
+static inline void
+_dispatch_syslog(const char *msg)
+{
+	fprintf(stderr, "%s\n", msg);
+}
+
+static inline void
+_dispatch_vsyslog(const char *msg, va_list ap)
+{
+	vfprintf(stderr, msg, ap);
+	fputc('\n', stderr);
 }
 #else // DISPATCH_USE_SIMPLE_ASL
 static inline void
