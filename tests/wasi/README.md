@@ -13,8 +13,21 @@ only `wasi_snapshot_preview1` — no JavaScript.
   main-queue timer.
 
 ## Run
+
+Integrated (CTest): when libdispatch is configured for WASI (the toolchain sets
+`CMAKE_SYSTEM_NAME=WASI`), the C tests here are built to wasm and registered as
+ctest cases. With `wasmtime` on `PATH` they run automatically:
 ```sh
-# after building libdispatch for wasm32-wasip1 (see run.sh header)
+cmake --build <build-wasi>            # builds dispatch_wasi_* test executables
+ctest --test-dir <build-wasi> --output-on-failure
+```
+Override the runner with `-DWASI_TEST_RUNNER="<runtime>;run"` (e.g. a node+shim
+wrapper). The Swift overlay tests (`dispatch_wasi_swift.swift`,
+`dispatch_wasi_api.swift`, `swift-demo/`) require the Swift overlay — see
+`swift-overlay.md`.
+
+Standalone (no CMake): `run.sh` builds + runs the C tests directly:
+```sh
 DISPATCH_BUILD=/path/to/build-wasi WASI_SDK=/path/to/wasi-sdk ./run.sh
 ```
 

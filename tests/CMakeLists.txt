@@ -1,4 +1,11 @@
 
+# WASI uses its own tests (run under a wasm runtime); the bsdtest harness below
+# relies on fork/exec, which WASI lacks.
+if(DISPATCH_WASI)
+    add_subdirectory(wasi)
+    return()
+endif()
+
 if(WIN32)
     execute_process(COMMAND
                       "${CMAKE_COMMAND}" -E copy_directory "${PROJECT_SOURCE_DIR}/private"
