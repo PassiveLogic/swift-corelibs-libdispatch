@@ -19,9 +19,13 @@ DISPATCH_BUILD=/path/to/build-wasi WASI_SDK=/path/to/wasi-sdk ./run.sh
 ```
 
 ## Scope / limitations (single-threaded port)
-- Works: queues, `async`, `dispatch_group` (+`notify`), `dispatch_after`/timers,
-  `dispatch_main`, the main queue.
-- Traps by design: `dispatch_sync`, and blocking `dispatch_semaphore_wait` /
-  `dispatch_group_wait` (a single-threaded wasm cannot block-and-be-woken).
+- Works: serial/concurrent queues, `async`, `dispatch_group` (+`notify`),
+  `DispatchWorkItem`, `dispatch_after` + repeating `DispatchSource` timers,
+  `dispatch_main`, the main queue, `concurrentPerform` (inline), `DispatchData`,
+  and **`dispatch_sync`** (it runs inline when uncontended — the common case).
+- Traps by design (a single-threaded wasm cannot block-and-be-woken): a
+  `dispatch_semaphore_wait` / `dispatch_group_wait` that would actually block
+  (nothing to signal it), and re-entrant `dispatch_sync` onto the current queue.
+  These raise a clean `DISPATCH_CLIENT_CRASH` (wasm trap), not a hang.
 - Not supported: file-descriptor / signal `dispatch_source`s (no `poll_oneoff`
   fd readiness in the browser shim).
