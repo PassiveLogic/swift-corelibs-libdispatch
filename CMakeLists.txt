@@ -104,6 +104,12 @@ set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
 if(ANDROID)
   set(CMAKE_HAVE_LIBC_PTHREAD YES)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  # wasi-libc provides pthread stubs directly. Static-library try_compile
+  # cannot prove that by linking, and -pthread selects the unsupported
+  # threaded ABI instead of the single-threaded wasip1 target.
+  set(CMAKE_HAVE_LIBC_PTHREAD YES CACHE BOOL "WASI pthread stubs are in libc")
+  set(THREADS_PREFER_PTHREAD_FLAG OFF)
 endif()
 find_package(Threads REQUIRED)
 
@@ -127,16 +133,28 @@ include(EnableFramePointers)
 # NOTE(abdulras) this is the CMake supported way to control whether we generate
 # shared or static libraries.  This impacts the behaviour of `add_library` in
 # what type of library it generates.
-option(BUILD_SHARED_LIBS "build shared libraries" ON)
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  set(BUILD_SHARED_LIBS_DEFAULT OFF)
+else()
+  set(BUILD_SHARED_LIBS_DEFAULT ON)
+endif()
+option(BUILD_SHARED_LIBS "build shared libraries" ${BUILD_SHARED_LIBS_DEFAULT})
 
 option(DISPATCH_ENABLE_ASSERTS "enable debug assertions" FALSE)
 
 option(ENABLE_DISPATCH_INIT_CONSTRUCTOR "enable libdispatch_init as a constructor" ON)
 set(USE_LIBDISPATCH_INIT_CONSTRUCTOR ${ENABLE_DISPATCH_INIT_CONSTRUCTOR})
 
-option(ENABLE_DTRACE "enable dtrace support" "")
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  set(ENABLE_DTRACE_DEFAULT OFF)
+else()
+  set(ENABLE_DTRACE_DEFAULT "")
+endif()
+option(ENABLE_DTRACE "enable dtrace support" "${ENABLE_DTRACE_DEFAULT}")
 
-if(APPLE OR BSD)
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  set(ENABLE_INTERNAL_PTHREAD_WORKQUEUES_DEFAULT ON)
+elseif(APPLE OR BSD)
   set(ENABLE_INTERNAL_PTHREAD_WORKQUEUES_DEFAULT OFF)
 else()
   set(ENABLE_INTERNAL_PTHREAD_WORKQUEUES_DEFAULT ON)
@@ -165,6 +183,29 @@ endif()
 
 option(ENABLE_THREAD_LOCAL_STORAGE "enable usage of thread local storage via _Thread_local" ON)
 set(DISPATCH_USE_THREAD_LOCAL_STORAGE ${ENABLE_THREAD_LOCAL_STORAGE})
+
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  # CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY makes link-dependent checks
+  # compile-only. These values are the exported-symbol set of Swift 6.3.2's
+  # single-threaded wasip1 libc.a; cache entries remain caller-overridable.
+  set(HAVE__PTHREAD_WORKQUEUE_INIT 0 CACHE BOOL "WASI libc result")
+  set(HAVE_GETPROGNAME 0 CACHE BOOL "WASI libc result")
+  set(HAVE_MACH_ABSOLUTE_TIME 0 CACHE BOOL "WASI libc result")
+  set(HAVE_MACH_APPROXIMATE_TIME 0 CACHE BOOL "WASI libc result")
+  set(HAVE_MACH_PORT_CONSTRUCT 0 CACHE BOOL "WASI libc result")
+  set(HAVE_MALLOC_CREATE_ZONE 0 CACHE BOOL "WASI libc result")
+  set(HAVE_POSIX_FADVISE 1 CACHE BOOL "WASI libc result")
+  set(HAVE_POSIX_SPAWNP 0 CACHE BOOL "WASI libc result")
+  set(HAVE_PTHREAD_KEY_INIT_NP 0 CACHE BOOL "WASI libc result")
+  set(HAVE_PTHREAD_ATTR_SETCPUPERCENT_NP 0 CACHE BOOL "WASI libc result")
+  set(HAVE_PTHREAD_YIELD_NP 0 CACHE BOOL "WASI libc result")
+  set(HAVE_PTHREAD_MAIN_NP 0 CACHE BOOL "WASI libc result")
+  set(HAVE_PTHREAD_WORKQUEUE_SETDISPATCH_NP 0 CACHE BOOL "WASI libc result")
+  set(HAVE_STRLCPY 1 CACHE BOOL "WASI libc result")
+  set(HAVE_SYSCONF 1 CACHE BOOL "WASI libc result")
+  set(HAVE_ARC4RANDOM 1 CACHE BOOL "WASI libc result")
+  set(USE_POSIX_SEM 0 CACHE BOOL "WASI libc result")
+endif()
 
 
 check_linker_flag(C "LINKER:--build-id=sha1" LINKER_SUPPORTS_BUILD_ID)
@@ -306,7 +347,10 @@ if(leaks_EXECUTABLE)
 endif()
 
 
-if(APPLE)
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  add_compile_options($<$<COMPILE_LANGUAGE:C,CXX>:-fmodule-map-file=${PROJECT_SOURCE_DIR}/dispatch/wasi/module.modulemap>
+                      $<$<COMPILE_LANGUAGE:C,CXX>:-fmodule-map-file=${PROJECT_SOURCE_DIR}/private/generic/module.modulemap>)
+elseif(APPLE)
   add_compile_options($<:$<COMPILE_LANGUAGE:C,CXX>:-fmodule-map-file=${PROJECT_SOURCE_DIR}/dispatch/darwin/module.modulemap>
                       $<:$<COMPILE_LANGUAGE:C,CXX>:-fmodule-map-file=${PROJECT_SOURCE_DIR}/private/darwin/module.modulemap>)
 else()

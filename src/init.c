@@ -87,6 +87,7 @@ dispatch_atfork_child(void)
 	_dispatch_unsafe_fork = 0;
 }
 
+#if !defined(__wasi__)
 int
 _dispatch_sigmask(void)
 {
@@ -109,6 +110,7 @@ _dispatch_sigmask(void)
 	r |= pthread_sigmask(SIG_BLOCK, &mask, NULL);
 	return dispatch_assume_zero(r);
 }
+#endif // !defined(__wasi__)
 #endif
 
 #pragma mark -
@@ -886,12 +888,18 @@ _dispatch_get_build(void)
 	return _dispatch_build;
 }
 
+#if defined(__wasi__)
+// WebAssembly has not implemented __builtin_return_address; losing the
+// repeated-log suppression only makes bug logs noisier
+#define _dispatch_bug_log_is_repeated() false
+#else
 #define _dispatch_bug_log_is_repeated() ({ \
 		static void *last_seen; \
 		void *previous = last_seen; \
 		last_seen =__builtin_return_address(0); \
 		last_seen == previous; \
 	})
+#endif
 
 #if HAVE_OS_FAULT_WITH_PAYLOAD
 __attribute__((__format__(__printf__,2,3)))
@@ -1250,6 +1258,20 @@ _dispatch_vsyslog(const char *msg, va_list ap)
   _dispatch_syslog(buffer);
 
   free(buffer);
+}
+#elif defined(__wasi__)
+static inline void
+_dispatch_syslog(const char *msg)
+{
+	// WASI has no syslog; log to stderr
+	fprintf(stderr, "%s\n", msg);
+}
+
+static inline void
+_dispatch_vsyslog(const char *msg, va_list ap)
+{
+	vfprintf(stderr, msg, ap);
+	fputc('\n', stderr);
 }
 #else // DISPATCH_USE_SIMPLE_ASL
 static inline void
