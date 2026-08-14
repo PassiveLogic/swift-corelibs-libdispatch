@@ -75,6 +75,12 @@ add_wasi_test(dispatch_wasi_assert_queue assert-queue.c crash
 add_wasi_test(dispatch_wasi_eager_drain eager-drain.c success "eager drain OK" 5)
 add_wasi_test(dispatch_wasi_specific_destructor specific-destructor.c success
   "specific destructor OK" 5)
+add_wasi_test(dispatch_wasi_sema_late_signal sema-late-signal.c success
+  "late signal OK" 5)
+add_wasi_test(dispatch_wasi_signal_disposition signal-disposition.c success
+  "signal disposition OK" 5)
+add_wasi_test(dispatch_wasi_sync_nested_async sync-nested-async.c success
+  "sync nested async OK" 5)
 
 # Readiness-driven tests: the runner pipes stdin only after a delay, so the
 # guest must park in the host poll and wake on fd readiness to pass.
@@ -98,6 +104,14 @@ add_test(NAME dispatch_wasi_fd_wakeup_wait
     "fd wakeup OK" "waiting on semaphore")
 set_tests_properties(dispatch_wasi_read_source dispatch_wasi_fd_wakeup_wait
   PROPERTIES TIMEOUT 10)
+# runner robustness: the guest exits long before the delayed stdin write
+# lands; the runner must still report the guest's own result rather than
+# dying on EPIPE from the orphaned write
+add_test(NAME dispatch_wasi_runner_early_exit
+  COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
+    --stdin-after "400:never-read" success
+    "$<TARGET_FILE:dispatch_wasi_sync_inline>" "sync inline OK")
+set_tests_properties(dispatch_wasi_runner_early_exit PROPERTIES TIMEOUT 10)
 
 add_executable(dispatch_wasi_clean_c_consumer clean-consumer.c)
 target_compile_options(dispatch_wasi_clean_c_consumer PRIVATE -fblocks -Wall)
@@ -184,6 +198,7 @@ if(NOT DISPATCH_WASI_NODE_OK)
   set(_wasi_explicit_tests
     dispatch_wasi_read_source
     dispatch_wasi_fd_wakeup_wait
+    dispatch_wasi_runner_early_exit
     dispatch_wasi_clean_c_consumer
     dispatch_wasi_runner_wrong_mode
     dispatch_wasi_runner_missing_diagnostic
