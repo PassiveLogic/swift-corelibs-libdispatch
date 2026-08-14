@@ -1,5 +1,7 @@
 
-if(APPLE)
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  set(DISPATCH_MODULE_MAP ${PROJECT_SOURCE_DIR}/dispatch/wasi/module.modulemap)
+elseif(APPLE)
   set(DISPATCH_MODULE_MAP ${PROJECT_SOURCE_DIR}/dispatch/darwin/module.modulemap)
 else()
   set(DISPATCH_MODULE_MAP ${PROJECT_SOURCE_DIR}/dispatch/generic/module.modulemap)
@@ -30,4 +32,3 @@ if(ENABLE_SWIFT)
           DESTINATION
             "${INSTALL_DISPATCH_HEADERS_DIR}")
 endif()
-
