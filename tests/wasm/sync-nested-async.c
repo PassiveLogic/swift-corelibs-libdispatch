@@ -23,7 +23,7 @@
  * outer queue. On threaded platforms the async block runs on a worker and
  * simply blocks until the outer sync returns. On the cooperative port, pokes
  * from inside an inline-executed sync body must DEFER (the submitting stack
- * holds the queue's barrier lock) and flush after the sync completes —
+ * holds the queue's barrier lock) and flush after the sync completes -
  * running them eagerly on the same stack would make the inner sync a
  * spurious "queue already owned by current thread" crash for a program that
  * is correct everywhere else.

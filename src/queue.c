@@ -1718,7 +1718,11 @@ _dispatch_barrier_trysync_or_async_f(dispatch_lane_t dq, void *ctxt,
 	if (flags & DISPATCH_BARRIER_TRYSYNC_SUSPEND) {
 		_dispatch_retain_2(dq); // see _dispatch_lane_suspend
 	}
+	// the invoke runs with the barrier lock held; see
+	// _dispatch_barrier_sync_f_inline
+	_dispatch_cooperative_pokes_defer();
 	_dispatch_barrier_trysync_or_async_f_complete(dq, ctxt, func, flags);
+	_dispatch_cooperative_pokes_undefer();
 }
 
 #pragma mark -

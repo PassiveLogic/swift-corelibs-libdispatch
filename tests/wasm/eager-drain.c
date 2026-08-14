@@ -28,11 +28,11 @@
  *     ON THE SUBMITTING STACK before dispatch_async returns.
  *  2. Blocks submitted from inside a running work item defer to the outer
  *     drain (no nested drains), which resumes in category priority order:
- *     due timers, manager queue, main queue, then root queues — so a
+ *     due timers, manager queue, main queue, then root queues - so a
  *     main-queue item submitted after a root-queue item still runs first.
  *  3. Consequence for groups: group_async at top level empties the group
  *     before dispatch_group_notify is even installed, so the notify runs
- *     before any subsequently submitted block — threaded platforms may order
+ *     before any subsequently submitted block - threaded platforms may order
  *     these the other way.
  */
 #include <dispatch/dispatch.h>

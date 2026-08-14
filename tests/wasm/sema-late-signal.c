@@ -23,7 +23,7 @@
  * running the very item that signals it: a 10ms timer fires during the 20ms
  * wait's park, and its handler burns 50ms before signaling. The drain cannot
  * be preempted at the deadline, so by the time the wait can return the
- * semaphore has been signaled — the wait must report success and consume the
+ * semaphore has been signaled - the wait must report success and consume the
  * signal, never "timed out" with the count stranded (which would make a later
  * unrelated wait succeed with no matching signal).
  */
