@@ -7,7 +7,10 @@
 - CMake 3.31 or newer. This is the first release whose documentation recognizes
   `CMAKE_SYSTEM_NAME=WASI`.
 - Ninja 1.10 or newer
-- Node.js 19.8 or newer
+- Node.js 19.8 or newer (runs the tests in this directory)
+- wasmtime, or another WASI runtime named with `-DWASI_TEST_RUNNER=...`
+  (runs the WASI subset of the upstream test suite in `tests/`; when the
+  runner is missing those tests are registered but disabled)
 
 Official Swift toolchains installed for the current user normally live under
 `~/Library/Developer/Toolchains`. Swift SDK artifact bundles installed with
@@ -61,12 +64,18 @@ cmake -S . -B build-wasi -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/WASI.c
 ```
 
 Add `-DENABLE_SWIFT=YES` to the configure step to build and test the Dispatch
-Swift overlay. CTest runs every WebAssembly executable under Node WASI with a
-watchdog. The runner captures guest output and passes only when the guest exit
-mode and every expected output marker or diagnostic match. Focused tests cover
-deferred barrier ordering, initial root-queue QoS order, fairness across
-self-replenishing roots, uptime and wall timers, signal and file-descriptor
-source failures, and both useful and immediately idle `dispatch_main()` paths.
+Swift overlay.
+
+CTest runs two groups of WASI tests. The single-thread-compatible subset of
+the upstream `tests/` suite (see `DISPATCH_C_TESTS` in `tests/CMakeLists.txt`)
+runs under `WASI_TEST_RUNNER` (default `wasmtime`), which only needs to
+propagate the guest exit code. The focused tests in this directory run under
+Node WASI with a watchdog; that runner captures guest output and passes only
+when the guest exit mode and every expected output marker or diagnostic
+match. Focused tests cover deferred barrier ordering, initial root-queue QoS
+order, fairness across self-replenishing roots, uptime and wall timers, signal
+and file-descriptor source failures, and both useful and immediately idle
+`dispatch_main()` paths.
 
 WASI selects `dispatch/wasi/module.modulemap` so static Swift clients autolink
 BlocksRuntime and the WASI emulation archives without changing the generic
