@@ -1,3 +1,7 @@
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  add_subdirectory(wasm)
+  return()
+endif()
 
 if(WIN32)
     execute_process(COMMAND
