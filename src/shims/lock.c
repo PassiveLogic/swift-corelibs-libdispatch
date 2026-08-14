@@ -376,12 +376,15 @@ _dispatch_sema4_wait(_dispatch_sema4_t *sema)
 		}
 		if (_dispatch_wasi_drain_one()) continue;
 		uint64_t deadline = _dispatch_wasi_next_timer_ns();
-		if (deadline) {
-			_dispatch_wasi_sleep_until(deadline);
+		if (deadline || _dispatch_wasi_has_event_sources()) {
+			// an armed timer, an armed fd source, or a pending emulated
+			// signal can still produce the work that signals this semaphore
+			_dispatch_wasi_wait_for_events(deadline);
 			continue;
 		}
 		DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
-				"semaphore wait with no runnable work or pending timers");
+				"semaphore wait with no runnable work, timers, or "
+				"event sources");
 	}
 }
 
@@ -403,12 +406,12 @@ _dispatch_sema4_timedwait(_dispatch_sema4_t *sema, dispatch_time_t timeout)
 						"work item");
 			}
 			uint64_t deadline = _dispatch_wasi_next_timer_ns();
-			if (!deadline) {
+			if (!deadline && !_dispatch_wasi_has_event_sources()) {
 				DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
-						"semaphore timedwait with no runnable work or "
-						"pending timers");
+						"semaphore timedwait with no runnable work, "
+						"timers, or event sources");
 			}
-			_dispatch_wasi_sleep_until(deadline);
+			_dispatch_wasi_wait_for_events(deadline);
 		} else if (_dispatch_wasi_in_drain()) {
 			// timers cannot merge while nested: sleeping toward one would
 			// spin at its deadline; honor only the wait's own deadline
@@ -672,12 +675,12 @@ _dispatch_wait_on_address(uint32_t volatile *_address, uint32_t value,
 						"work item");
 			}
 			uint64_t deadline = _dispatch_wasi_next_timer_ns();
-			if (!deadline) {
+			if (!deadline && !_dispatch_wasi_has_event_sources()) {
 				DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
-						"_dispatch_wait_on_address() with no runnable work "
-						"or pending timers");
+						"_dispatch_wait_on_address() with no runnable work, "
+						"timers, or event sources");
 			}
-			_dispatch_wasi_sleep_until(deadline);
+			_dispatch_wasi_wait_for_events(deadline);
 		}
 	}
 	return 0;

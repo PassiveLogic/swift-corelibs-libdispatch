@@ -7317,14 +7317,16 @@ dispatch_main(void)
 #if defined(__wasi__)
 	// Cooperative single-threaded WASI: there is no way to park the main
 	// thread while other threads do the work, so dispatch_main() itself
-	// becomes the drain loop. When the process is fully idle with no armed
-	// timer, waiting would hang forever: crash loudly instead.
+	// becomes the drain loop. Armed timers and event sources (fd readiness,
+	// pending emulated signals) park the loop in a host wait; when the
+	// process is fully idle with none of those, waiting would hang forever:
+	// crash loudly instead.
 	_dispatch_object_debug(&_dispatch_main_q, "%s", __func__);
 	for (;;) {
 		_dispatch_wasi_drain();
 		uint64_t deadline = _dispatch_wasi_next_timer_ns();
-		if (deadline) {
-			_dispatch_wasi_sleep_until(deadline);
+		if (deadline || _dispatch_wasi_has_event_sources()) {
+			_dispatch_wasi_wait_for_events(deadline);
 			continue;
 		}
 		DISPATCH_CLIENT_CRASH(0,
