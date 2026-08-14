@@ -45,6 +45,14 @@ add_wasi_test(dispatch_wasi_qos_order qos-order.c success "qos order OK" 5)
 add_wasi_test(dispatch_wasi_root_fairness root-fairness.c success
   "root fairness OK" 5)
 add_wasi_test(dispatch_wasi_wall_timer wall-timer.c success "wall timer OK" 5)
+add_wasi_test(dispatch_wasi_sync_inline sync-inline.c success "sync inline OK" 5)
+add_wasi_test(dispatch_wasi_main_queue_order main-queue-order.c success
+  "main queue order OK" 5)
+add_wasi_test(dispatch_wasi_blocking_waits blocking-waits.c success
+  "blocking waits OK" 10)
+add_wasi_test(dispatch_wasi_api_surface api-surface.c success "api surface OK" 10)
+add_wasi_test(dispatch_wasi_assert_queue assert-queue.c crash
+  "Block was expected to execute on queue" 5 "assert on-queue OK")
 
 add_executable(dispatch_wasi_clean_c_consumer clean-consumer.c)
 target_compile_options(dispatch_wasi_clean_c_consumer PRIVATE -fblocks -Wall)
