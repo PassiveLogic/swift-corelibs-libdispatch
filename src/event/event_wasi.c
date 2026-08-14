@@ -73,10 +73,10 @@ static bool _dispatch_wasi_draining;
 // iterating. The caller's drain loop picks the work up right after the
 // harvest returns.
 static bool _dispatch_wasi_harvesting;
-// While a caller-held critical section is on the stack outside any drain —
+// While a caller-held critical section is on the stack outside any drain -
 // an inline-executed dispatch_sync body (the queue's barrier lock is held),
 // a dispatch_once initializer (the once gate is held), an object dispose, or
-// the specifics-hash mutation in dispatch_queue_set_specific — pokes must
+// the specifics-hash mutation in dispatch_queue_set_specific - pokes must
 // only record pending work: an eager drain would run client code on the same
 // stack under that lock, turning programs that are correct on threaded
 // platforms into spurious deadlock crashes. The matching undefer flushes

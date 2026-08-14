@@ -26,13 +26,13 @@ Two invariants hold at every pumping site:
 
 | Site | Reached by | Single-thread behavior | Verdict |
 |---|---|---|---|
-| `semaphore.c` `_dispatch_semaphore_wait_slow` → `_dispatch_sema4_wait` / `_dispatch_sema4_timedwait` | `dispatch_semaphore_wait` (public API) | Pumps queued work / timers / fd events until signaled or deadline. Nothing satisfiable → named crash. | **Intended.** This is the feature. Client code runs beneath the caller's `wait` — the documented eager/pumping cost. |
+| `semaphore.c` `_dispatch_semaphore_wait_slow` → `_dispatch_sema4_wait` / `_dispatch_sema4_timedwait` | `dispatch_semaphore_wait` (public API) | Pumps queued work / timers / fd events until signaled or deadline. Nothing satisfiable → named crash. | **Intended.** This is the feature. Client code runs beneath the caller's `wait` - the documented eager/pumping cost. |
 | `semaphore.c` `_dispatch_group_wait_slow` → `_dispatch_wait_on_address(&dg->dg_gen)` | `dispatch_group_wait` (public API) | Same as semaphores; loops on the group generation. | **Intended.** |
-| `queue.c` `__DISPATCH_WAIT_FOR_QUEUE__` → `_dispatch_thread_event_wait(&dsc->dsc_event)` | Contended `dispatch_sync` / `barrier_sync` on a non-empty queue; `dispatch_block_wait` | The waiter pushes its sync record onto the target queue and parks; pumping drains the queue's prior items; the turnover signals the event (a plain sema4 counter, so the pumped signal is observed on the next loop iteration). Re-entrant sync onto the current queue is caught earlier by the owner check (correct under the `tid << 2` encoding). | **Safe by design.** Prior queue items (client code) run beneath the caller's `sync` — semantically required: those items *must* run before the sync block can. |
+| `queue.c` `__DISPATCH_WAIT_FOR_QUEUE__` → `_dispatch_thread_event_wait(&dsc->dsc_event)` | Contended `dispatch_sync` / `barrier_sync` on a non-empty queue; `dispatch_block_wait` | The waiter pushes its sync record onto the target queue and parks; pumping drains the queue's prior items; the turnover signals the event (a plain sema4 counter, so the pumped signal is observed on the next loop iteration). Re-entrant sync onto the current queue is caught earlier by the owner check (correct under the `tid << 2` encoding). | **Safe by design.** Prior queue items (client code) run beneath the caller's `sync` - semantically required: those items *must* run before the sync block can. |
 | `apply.c` `_dispatch_apply_invoke` → `_dispatch_thread_event_wait(&da->da_event)` | `dispatch_apply` | With one thread, the caller runs every iteration inline; the final iteration signals the event on this same thread *before* the wait executes, so the wait consumes an already-posted count on its fast path and never parks. | **Unreachable as a blocking wait.** Covered by the passing `dispatch_wasi_api_surface` apply check. |
 | `source.c` cancel/dispose `DSF_CANCEL_WAITER` loop → `_dispatch_wait_on_address(&ds->dq_atomic_flags)` | Synchronous source cancellation teardown waiting for unregistration to complete | Unregistration executes on the manager/target queue; pumping drains the manager queue, `DSF_DELETED` gets set, the loop exits. If completion would require the very drain the caller is inside (nested), the nested rule crashes instead of hanging. | **Converges via pumping.** Rarely reached; behavior is the same drain-or-crash policy as the public waits. |
 
-## Non-pumping wait sites (spin family) — hardened by this audit
+## Non-pumping wait sites (spin family) - hardened by this audit
 
 `_dispatch_unfair_lock_lock_slow` and `_dispatch_once_wait` do not use the
 pumping primitives; on targets without unfair-lock/futex support they loop
@@ -42,12 +42,12 @@ reachable only in dead states:
 - **Recursive acquisition** (a once initializer re-entering its own
   `dispatch_once`; a callback re-locking a lock its own frame holds) is
   caught *before* the switch by the `"trying to lock recursively"` owner
-  check — which works precisely because this branch's `tid << 2` encoding
+  check - which works precisely because this branch's `tid << 2` encoding
   keeps the owner distinguishable from `DLOCK_OWNER_NULL`.
 - **Any other contention** would mean a lock held by an owner that can never
   run again (there is no other thread). The inherited `_dispatch_thread_switch`
   body for this target was **empty**, turning that state into a silent hot
-  spin — the one hang-shaped behavior left in the port. It now crashes with
+  spin - the one hang-shaped behavior left in the port. It now crashes with
   `single-threaded WASI deadlock: lock contended with no other thread to
   release it`, consistent with the port's never-hang policy.
 
@@ -57,14 +57,14 @@ callers compiled for WASI: queue specifics, side suspend-count transfer,
 legacy target-queue setting). **One real finding**: the
 `dispatch_queue_set_specific` replace/remove path submitted the old value's
 destructor with `_dispatch_barrier_async_detached_f` *while `dqsh_lock` was
-held* — harmless on threaded platforms (the push just wakes a worker), but
+held* - harmless on threaded platforms (the push just wakes a worker), but
 under this port's eager drain the push can run the client destructor
 immediately, on the same stack, under the lock; a destructor touching the
 same queue's specifics would then hit the recursive-lock crash. Fixed by
 capturing the old value under the lock and deferring the push until after
 unlock (destructor submissions carry no ordering guarantee, so the change is
 unobservable on threaded platforms); `specific-destructor.c` pins it. The
-queue-dealloc specifics dispose path was checked too — it runs lock-free.
+queue-dealloc specifics dispose path was checked too - it runs lock-free.
 Every other audited critical section only mutates structure and returns; if
 a corrupted state ever produces same-stack lock contention anyway, the new
 `_dispatch_thread_switch` crash fires instead of a spin.
@@ -77,5 +77,5 @@ pending emulated signal), **timed out** (after genuinely consuming its
 deadline), or a **named crash** for provable deadlocks. No wait can hang and
 no wait can spin. The re-entrancy exposure of pumping is confined to
 top-level blocking calls, whose callers already accept work happening
-"elsewhere" during the wait on threaded platforms — the WASI difference,
+"elsewhere" during the wait on threaded platforms - the WASI difference,
 documented in `README.md`, is that "elsewhere" is the same stack.

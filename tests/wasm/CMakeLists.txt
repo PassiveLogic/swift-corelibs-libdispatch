@@ -1,6 +1,6 @@
 # Node drives the focused tests (it captures guest output and checks exit mode
 # plus expected markers). When Node is missing or too old, everything here
-# still builds and every test stays visible in ctest, just DISABLED — the same
+# still builds and every test stays visible in ctest, just DISABLED - the same
 # shape tests/CMakeLists.txt uses when WASI_TEST_RUNNER is absent.
 set(DISPATCH_WASI_NODE_OK TRUE)
 find_program(NODE_EXECUTABLE node)

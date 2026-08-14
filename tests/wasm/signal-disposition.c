@@ -84,7 +84,7 @@ main(void)
 	}
 	dispatch_release(src);
 
-	// disposition must be the app's handler again — with SIG_DFL this
+	// disposition must be the app's handler again - with SIG_DFL this
 	// raise() terminates the process instead
 	raise(SIGUSR1);
 	if (app_hits != 2) {

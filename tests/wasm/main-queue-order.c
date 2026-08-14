@@ -21,7 +21,6 @@
 /*
  * The thread-bound main queue drains in strict serial FIFO order,
  * interleaved with global-queue work, plus a main-queue timer.
- * (Adapted from the dispatch_wasi_mainqueue smoke test in PR #1.)
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
