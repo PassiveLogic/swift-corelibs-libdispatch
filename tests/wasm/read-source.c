@@ -21,7 +21,7 @@
 /*
  * A read source on stdin. The runner writes the payload only after a delay,
  * so passing requires dispatch_main() to genuinely park in the host poll
- * until the descriptor becomes readable — not to find data already buffered.
+ * until the descriptor becomes readable - not to find data already buffered.
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>

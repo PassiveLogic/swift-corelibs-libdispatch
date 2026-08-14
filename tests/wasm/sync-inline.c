@@ -21,7 +21,6 @@
 /*
  * dispatch_sync and dispatch_barrier_sync run inline on the sole WASI thread
  * without requiring dispatch_main() or any cooperative drain.
- * (Adapted from the dispatch_wasi_sync smoke test in PR #1.)
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>

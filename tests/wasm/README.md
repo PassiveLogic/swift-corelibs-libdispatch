@@ -50,17 +50,17 @@ completion on the submitting stack before the call returns. This is the port's
 one deliberate divergence from threaded Dispatch, and it is what makes the
 library usable in embedded hosts (browser modules, reactors) that never call
 `dispatch_main()`: without it, queued work would never execute there. The
-costs are named plainly: callbacks can re-enter code on the same stack that
+costs: callbacks can re-enter code on the same stack that
 native callers do not expect to be re-entered there, and cross-queue ordering
 differs from threaded platforms (a `dispatch_group_notify` installed after the
 group already drained runs before later submissions). Blocks submitted from
-inside a running work item defer to the outer drain — there are no nested
-drains — and the outer drain resumes in category priority order: due timers,
+inside a running work item defer to the outer drain - there are no nested
+drains - and the outer drain resumes in category priority order: due timers,
 the manager queue, the main queue, then root queues by QoS. All of this is
 pinned by `eager-drain.c`; a change in these orderings is a behavior change,
 not an implementation detail.
 
-**Wall-clock timers are anchored at arm time — a documented WASI limitation.**
+**Wall-clock timers are anchored at arm time - a documented WASI limitation.**
 A wall-deadline timer is converted to the uptime clock when it is armed, so a
 later host wall-clock adjustment does not reposition an armed timer (Darwin
 repositions them). This is deliberate: WASI has no clock-change notification
@@ -72,7 +72,7 @@ pins it.
 single-threaded `wasip1` only, and the build enforces that: compiling with
 wasm atomics or `-pthread` (`__wasm_atomics__` / `_REENTRANT`) hits an
 `#error` in `event_wasi.c`. A future `wasip1-threads` port should not extend
-this backend — with real threads, the normal worker-pool model (internal
+this backend - with real threads, the normal worker-pool model (internal
 pthread workqueue plus a poll-driven manager) is the right shape, and the
 compile-time guard is the seam where that fork happens.
 
@@ -85,7 +85,7 @@ whose progress can only come from an armed fd source parks in the host poll
 instead of crashing. Guardrails:
 
 - Regular files and directories are never polled (POSIX always-ready; Node's
-  uvwasi also rejects fd subscriptions for them) — they merge as
+  uvwasi also rejects fd subscriptions for them) - they merge as
   level-triggered always-ready, like the epoll backend's `EPERM` handling.
 - A capability probe at registration crashes with a named diagnostic on hosts
   whose `poll_oneoff` lacks fd subscriptions (browser WASI shims), instead of
@@ -116,10 +116,6 @@ because process sources are implemented only by the kevent backend, and WASI
 has no processes. Swift process and vnode source APIs are compiled out for
 WASI.
 
-Uptime and wall-clock timers fire normally. The WASI backend converts each wall
-timer deadline to the uptime clock when it is armed, so later host wall-clock
-adjustments do not reposition an already armed timer.
-
 ## Build and test
 
 From the repository root, configure, build, and test the C library with one
@@ -146,37 +142,37 @@ and file-descriptor source failures, and both useful and immediately idle
 Additional focused tests pin behaviors that differentiated the two original
 WASI port candidates (PRs #1 and #2):
 
-- `sync-inline.c`, `main-queue-order.c` — inline `dispatch_sync` without a
+- `sync-inline.c`, `main-queue-order.c` - inline `dispatch_sync` without a
   drain, and thread-bound main-queue FIFO order (adapted from PR #1's tests).
-- `blocking-waits.c` — blocking-wait contracts: `dispatch_block_wait` runs the
+- `blocking-waits.c` - blocking-wait contracts: `dispatch_block_wait` runs the
   queued block, `dispatch_group_wait(FOREVER)` returns once the group empties,
   and a timed semaphore wait consumes its full timeout instead of returning
   early.
-- `api-surface.c` — one binary sweeping the object/attr/block/data/group/
+- `api-surface.c` - one binary sweeping the object/attr/block/data/group/
   source families: `dispatch_once`, queue specifics, initially-inactive +
   `dispatch_activate`, suspend/resume, finalizers, `DispatchData` operations,
   block cancel/testcancel, user-data sources with registration/event/cancel
   handlers, timer sources, and wall-clock `dispatch_after`.
-- `assert-queue.c` — `dispatch_assert_queue` must trap off-queue and pass
+- `assert-queue.c` - `dispatch_assert_queue` must trap off-queue and pass
   on-queue; guards the tid-vs-`DLOCK_OWNER_MASK` encoding in `shims/lock.h`
   (a constant tid that masks to zero makes every unlocked queue look owned
   by the current thread).
-- `eager-drain.c` — pins the eager-submission semantics described above:
+- `eager-drain.c` - pins the eager-submission semantics described above:
   top-level async runs before the call returns, nested submissions defer and
   drain main-before-root, group notify precedes later submissions.
 
 Event-source tests:
 
-- `write-source.c` — a write source on stdout fires through poll readiness,
+- `write-source.c` - a write source on stdout fires through poll readiness,
   rearms level-triggered after each `EV_DISPATCH` delivery, and parks
   `dispatch_main()` instead of trapping.
-- `read-source.c`, `fd-wakeup-wait.c` — the runner pipes stdin only after a
+- `read-source.c`, `fd-wakeup-wait.c` - the runner pipes stdin only after a
   delay (`--stdin-after`), so passing proves the guest genuinely parks in the
   host poll: once under `dispatch_main()`, once inside a blocking
   `dispatch_semaphore_wait(FOREVER)` satisfied by the read source's handler.
-- `signal-source.c` — two `raise(SIGUSR1)` from a queued item deliver one
+- `signal-source.c` - two `raise(SIGUSR1)` from a queued item deliver one
   handler invocation with count 2.
-- `unsupported-source.c` — a read source on an fd that is not open crashes at
+- `unsupported-source.c` - a read source on an fd that is not open crashes at
   registration with a named diagnostic.
 
 WASI selects `dispatch/wasi/module.modulemap` so static Swift clients autolink

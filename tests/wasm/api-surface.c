@@ -21,9 +21,7 @@
 /*
  * Broad Dispatch API surface smoke for single-threaded WASI: exercises the
  * object, queue-attribute, block, data, group, and source families end to
- * end in one binary. Derived from the probe program used to compare the two
- * WASI port candidates (PRs #1 and #2); every check here passed on the
- * cooperative eager-drain implementation this branch adopts.
+ * end in one binary.
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
