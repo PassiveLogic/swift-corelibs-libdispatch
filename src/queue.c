@@ -2318,13 +2318,19 @@ dispatch_queue_set_specific(dispatch_queue_t dq, const void *key,
 		return;
 	}
 
+	// The replaced value's destructor submission must happen after the lock
+	// is dropped: pushing to a root queue can run work immediately on
+	// cooperative single-threaded targets (WASI), and client code must never
+	// run under dqsh_lock. Destructor submissions carry no ordering
+	// guarantee, so deferring the push is unobservable elsewhere.
+	dispatch_function_t old_destructor = NULL;
+	void *old_ctxt = NULL;
+
 	_dispatch_unfair_lock_lock(&dqsh->dqsh_lock);
 	dqs = _dispatch_queue_specific_find(dqsh, key);
 	if (dqs) {
-		if (dqs->dqs_destructor) {
-			_dispatch_barrier_async_detached_f(rq, dqs->dqs_ctxt,
-					dqs->dqs_destructor);
-		}
+		old_ctxt = dqs->dqs_ctxt;
+		old_destructor = dqs->dqs_destructor;
 		if (ctxt) {
 			dqs->dqs_ctxt = ctxt;
 			dqs->dqs_destructor = destructor;
@@ -2341,6 +2347,10 @@ dispatch_queue_set_specific(dispatch_queue_t dq, const void *key,
 	}
 
 	_dispatch_unfair_lock_unlock(&dqsh->dqsh_lock);
+
+	if (old_destructor) {
+		_dispatch_barrier_async_detached_f(rq, old_ctxt, old_destructor);
+	}
 }
 
 DISPATCH_ALWAYS_INLINE

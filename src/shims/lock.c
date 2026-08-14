@@ -67,7 +67,26 @@ _dispatch_thread_switch(dispatch_lock value, dispatch_lock_options_t flags,
   sched_yield();
 }
 #endif // HAVE_UL_UNFAIR_LOCK
-#elif defined(__unix__) || defined(__wasi__)
+#elif defined(__wasi__)
+#if !HAVE_UL_UNFAIR_LOCK && !HAVE_FUTEX_PI
+DISPATCH_NOINLINE
+static void
+_dispatch_thread_switch(dispatch_lock value, dispatch_lock_options_t flags,
+  uint32_t timeout)
+{
+	(void)flags;
+	(void)timeout;
+	// Only reachable when an unfair lock or once gate is contended, and on
+	// the sole WASI thread "contended by another owner" is always a dead
+	// state: either internal state corruption, or a callback run by a
+	// pumping wait trying to take a lock still held by an interrupted
+	// frame. Yielding cannot help (there is nobody to yield to) and would
+	// spin hot forever; crash loudly instead, naming the observed owner.
+	DISPATCH_CLIENT_CRASH(value, "single-threaded WASI deadlock: "
+			"lock contended with no other thread to release it");
+}
+#endif
+#elif defined(__unix__)
 #if !HAVE_UL_UNFAIR_LOCK && !HAVE_FUTEX_PI
 DISPATCH_ALWAYS_INLINE
 static inline void
