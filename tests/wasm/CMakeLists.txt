@@ -86,7 +86,9 @@ add_wasi_test(dispatch_wasi_sync_nested_async sync-nested-async.c success
 # guest must park in the host poll and wake on fd readiness to pass.
 add_executable(dispatch_wasi_read_source read-source.c)
 add_executable(dispatch_wasi_fd_wakeup_wait fd-wakeup-wait.c)
-foreach(_stdin_test dispatch_wasi_read_source dispatch_wasi_fd_wakeup_wait)
+add_executable(dispatch_wasi_io_stream dispatch-io-stream.c)
+foreach(_stdin_test dispatch_wasi_read_source dispatch_wasi_fd_wakeup_wait
+    dispatch_wasi_io_stream)
   target_compile_options(${_stdin_test} PRIVATE -fblocks -Wall)
   target_link_libraries(${_stdin_test} PRIVATE dispatch)
   target_link_options(${_stdin_test} PRIVATE
@@ -102,7 +104,19 @@ add_test(NAME dispatch_wasi_fd_wakeup_wait
   COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
     --stdin-after "250:ping" success "$<TARGET_FILE:dispatch_wasi_fd_wakeup_wait>"
     "fd wakeup OK" "waiting on semaphore")
+add_test(NAME dispatch_wasi_io_stream
+  COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
+    --stdin-after "250:ping" success "$<TARGET_FILE:dispatch_wasi_io_stream>"
+    "dispatch io stream OK")
+# capability guardrail: under a host whose poll_oneoff rejects fd
+# subscriptions (the runner emulates one with --deny-fd-poll), fd-source
+# registration must crash with the named diagnostic instead of hanging
+add_test(NAME dispatch_wasi_fd_poll_denied
+  COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
+    --deny-fd-poll crash "$<TARGET_FILE:dispatch_wasi_read_source>"
+    "does not support file-descriptor readiness")
 set_tests_properties(dispatch_wasi_read_source dispatch_wasi_fd_wakeup_wait
+  dispatch_wasi_io_stream dispatch_wasi_fd_poll_denied
   PROPERTIES TIMEOUT 10)
 # runner robustness: the guest exits long before the delayed stdin write
 # lands; the runner must still report the guest's own result rather than
@@ -198,6 +212,8 @@ if(NOT DISPATCH_WASI_NODE_OK)
   set(_wasi_explicit_tests
     dispatch_wasi_read_source
     dispatch_wasi_fd_wakeup_wait
+    dispatch_wasi_io_stream
+    dispatch_wasi_fd_poll_denied
     dispatch_wasi_runner_early_exit
     dispatch_wasi_clean_c_consumer
     dispatch_wasi_runner_wrong_mode
