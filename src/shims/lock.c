@@ -67,7 +67,7 @@ _dispatch_thread_switch(dispatch_lock value, dispatch_lock_options_t flags,
   sched_yield();
 }
 #endif // HAVE_UL_UNFAIR_LOCK
-#elif defined(__unix__)
+#elif defined(__unix__) || defined(__wasi__)
 #if !HAVE_UL_UNFAIR_LOCK && !HAVE_FUTEX_PI
 DISPATCH_ALWAYS_INLINE
 static inline void
@@ -337,6 +337,88 @@ _dispatch_sema4_timedwait(_dispatch_sema4_t *sema, dispatch_time_t timeout)
 	_pop_timer_resolution(resolution);
 	return wait_result == WAIT_TIMEOUT;
 }
+#elif defined(__wasi__)
+DISPATCH_ALWAYS_INLINE
+static inline bool
+_dispatch_sema4_try_consume(_dispatch_sema4_t *sema)
+{
+	uint32_t value = os_atomic_load(sema, relaxed);
+	while (value > 0) {
+		if (os_atomic_cmpxchgv(sema, value, value - 1, &value, acquire)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void
+_dispatch_sema4_dispose_slow(_dispatch_sema4_t *sema, int policy DISPATCH_UNUSED)
+{
+	*sema = 0;
+}
+
+void
+_dispatch_sema4_signal(_dispatch_sema4_t *sema, long count)
+{
+	(void)os_atomic_add(sema, (uint32_t)count, release);
+}
+
+void
+_dispatch_sema4_wait(_dispatch_sema4_t *sema)
+{
+	for (;;) {
+		if (_dispatch_sema4_try_consume(sema)) return;
+		if (_dispatch_wasi_in_drain()) {
+			// nested waits can never be satisfied: no other work or timer
+			// can run while a drained item blocks the sole thread
+			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
+					"semaphore wait from within a drained work item");
+		}
+		if (_dispatch_wasi_drain_one()) continue;
+		uint64_t deadline = _dispatch_wasi_next_timer_ns();
+		if (deadline) {
+			_dispatch_wasi_sleep_until(deadline);
+			continue;
+		}
+		DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
+				"semaphore wait with no runnable work or pending timers");
+	}
+}
+
+bool
+_dispatch_sema4_timedwait(_dispatch_sema4_t *sema, dispatch_time_t timeout)
+{
+	do {
+		if (_dispatch_sema4_try_consume(sema)) return false;
+		if (_dispatch_wasi_drain_one()) continue;
+		uint64_t nsec = _dispatch_timeout(timeout);
+		if (nsec == 0) break;
+		if (nsec == DISPATCH_TIME_FOREVER) {
+			if (_dispatch_wasi_in_drain()) {
+				// nested waits can never be satisfied: no other work or
+				// timer can run while a drained item blocks the sole
+				// thread
+				DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
+						"semaphore timedwait from within a drained "
+						"work item");
+			}
+			uint64_t deadline = _dispatch_wasi_next_timer_ns();
+			if (!deadline) {
+				DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
+						"semaphore timedwait with no runnable work or "
+						"pending timers");
+			}
+			_dispatch_wasi_sleep_until(deadline);
+		} else if (_dispatch_wasi_in_drain()) {
+			// timers cannot merge while nested: sleeping toward one would
+			// spin at its deadline; honor only the wait's own deadline
+			_dispatch_wasi_sleep_until(_dispatch_uptime() + nsec);
+		} else {
+			_dispatch_wasi_sleep_briefly_or_until(_dispatch_uptime() + nsec);
+		}
+	} while (_dispatch_timeout(timeout));
+	return true;
+}
 #else
 #error "port has to implement _dispatch_sema4_t"
 #endif
@@ -560,6 +642,45 @@ _dispatch_wait_on_address(uint32_t volatile *_address, uint32_t value,
 		return _umtx_op((void*)address, UMTX_OP_WAIT_UINT, value, (void*)(uintptr_t)sizeof(struct timespec), (void*)&ts);
 	}
 	return _umtx_op((void*)address, UMTX_OP_WAIT_UINT, value, 0, 0);
+#elif defined(__wasi__)
+	(void)flags;
+	while (os_atomic_load(address, relaxed) == value) {
+		// re-check the deadline before draining so that a continuous stream
+		// of runnable work cannot make a timed wait overshoot it
+		if (nsecs != DISPATCH_TIME_FOREVER &&
+				(nsecs = _dispatch_timeout(timeout)) == 0) {
+			return ETIMEDOUT;
+		}
+		if (_dispatch_wasi_drain_one()) continue;
+		if (nsecs != DISPATCH_TIME_FOREVER) {
+			if (_dispatch_wasi_in_drain()) {
+				// timers cannot merge while nested: sleeping toward one
+				// would spin at its deadline; honor only the wait's own
+				// deadline
+				_dispatch_wasi_sleep_until(_dispatch_uptime() + nsecs);
+			} else {
+				_dispatch_wasi_sleep_briefly_or_until(
+						_dispatch_uptime() + nsecs);
+			}
+		} else {
+			if (_dispatch_wasi_in_drain()) {
+				// nested waits can never be satisfied: no other work or
+				// timer can run while a drained item blocks the sole
+				// thread
+				DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
+						"_dispatch_wait_on_address() from within a drained "
+						"work item");
+			}
+			uint64_t deadline = _dispatch_wasi_next_timer_ns();
+			if (!deadline) {
+				DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
+						"_dispatch_wait_on_address() with no runnable work "
+						"or pending timers");
+			}
+			_dispatch_wasi_sleep_until(deadline);
+		}
+	}
+	return 0;
 #else
 #error _dispatch_wait_on_address unimplemented for this platform
 #endif
