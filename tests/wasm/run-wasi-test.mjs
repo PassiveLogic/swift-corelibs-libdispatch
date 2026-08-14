@@ -41,10 +41,16 @@ async function runChecked(...argv) {
   const child = spawn(process.execPath, [runner, '--guest', binary], {
     stdio: [stdinAfter ? 'pipe' : 'ignore', 'pipe', 'pipe'],
   });
+  let stdinTimer = null;
   if (stdinAfter) {
-    setTimeout(() => {
-      child.stdin.write(stdinAfter.text);
-      child.stdin.end();
+    // EPIPE from a guest that already exited is not a runner failure
+    child.stdin.on('error', () => {});
+    stdinTimer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null &&
+          child.stdin.writable) {
+        child.stdin.write(stdinAfter.text);
+        child.stdin.end();
+      }
     }, stdinAfter.ms);
   }
   let stdout = '';
@@ -56,7 +62,10 @@ async function runChecked(...argv) {
 
   const result = await new Promise((resolve, reject) => {
     child.on('error', reject);
-    child.on('close', (code, signal) => resolve({ code, signal }));
+    child.on('close', (code, signal) => {
+      if (stdinTimer) clearTimeout(stdinTimer);
+      resolve({ code, signal });
+    });
   });
   process.stdout.write(stdout);
   process.stderr.write(stderr);

@@ -73,6 +73,57 @@ static bool _dispatch_wasi_draining;
 // iterating. The caller's drain loop picks the work up right after the
 // harvest returns.
 static bool _dispatch_wasi_harvesting;
+// While a caller-held critical section is on the stack outside any drain —
+// an inline-executed dispatch_sync body (the queue's barrier lock is held),
+// a dispatch_once initializer (the once gate is held), an object dispose, or
+// the specifics-hash mutation in dispatch_queue_set_specific — pokes must
+// only record pending work: an eager drain would run client code on the same
+// stack under that lock, turning programs that are correct on threaded
+// platforms into spurious deadlock crashes. The matching undefer flushes
+// once the outermost section exits. (Blocking waits inside such sections
+// still pump via _dispatch_wasi_drain_one: that is the only possible source
+// of progress for them and is documented in WAIT-PUMPING-AUDIT.md.)
+static unsigned _dispatch_wasi_poke_defer_depth;
+
+DISPATCH_ALWAYS_INLINE
+static inline bool
+_dispatch_wasi_work_pending(void)
+{
+	if (_dispatch_wasi_mgr_pending || _dispatch_wasi_main_pending) return true;
+	for (size_t i = 0; i < countof(_dispatch_wasi_root_pending); i++) {
+		if (_dispatch_wasi_root_pending[i]) return true;
+	}
+	return false;
+}
+
+// The single choke point for the eager-drain policy: pokes record pending
+// work always, and drain immediately only when the sole thread is not
+// already draining, not walking the muxnote list, and not inside a deferred
+// critical section.
+static void
+_dispatch_wasi_drain_unless_deferred(void)
+{
+	if (!_dispatch_wasi_draining && !_dispatch_wasi_harvesting &&
+			!_dispatch_wasi_poke_defer_depth) {
+		_dispatch_wasi_drain();
+	}
+}
+
+void
+_dispatch_wasi_defer_pokes(void)
+{
+	_dispatch_wasi_poke_defer_depth++;
+}
+
+void
+_dispatch_wasi_undefer_pokes(void)
+{
+	dispatch_assert(_dispatch_wasi_poke_defer_depth > 0);
+	if (--_dispatch_wasi_poke_defer_depth) return;
+	if (_dispatch_wasi_work_pending()) {
+		_dispatch_wasi_drain_unless_deferred();
+	}
+}
 
 #pragma mark dispatch_muxnote_t
 
@@ -94,6 +145,9 @@ typedef struct dispatch_muxnote_s {
 	uint16_t  dmn_disarmed_events; // delivered, awaiting EV_DISPATCH rearm
 	int8_t    dmn_filter;          // EVFILT_READ (fds; writers share) or EVFILT_SIGNAL
 	bool      dmn_always_ready;    // regular file/directory: never polled
+#ifdef _WASI_EMULATED_SIGNAL
+	void    (*dmn_prev_sig_handler)(int); // restored at unregistration
+#endif
 } *dispatch_muxnote_t;
 
 static LIST_HEAD(, dispatch_muxnote_s) _dispatch_wasi_muxnotes;
@@ -144,6 +198,9 @@ _dispatch_muxnote_create(dispatch_unote_t du, uint16_t events)
 	int8_t filter = du._du->du_filter;
 	uint32_t ident = du._du->du_ident;
 	bool always_ready = false;
+#ifdef _WASI_EMULATED_SIGNAL
+	void (*prev_sig_handler)(int) = SIG_DFL;
+#endif
 
 	switch (filter) {
 	case EVFILT_WRITE:
@@ -188,8 +245,13 @@ _dispatch_muxnote_create(dispatch_unote_t du, uint16_t events)
 					"dispatch source");
 		}
 		// in-process delivery only: the handler runs synchronously inside
-		// raise(); nothing external can send a signal to a WASI guest
-		signal(signo, _dispatch_wasi_signal_handler);
+		// raise(); nothing external can send a signal to a WASI guest. Save
+		// the application's disposition so unregistration can restore it.
+		prev_sig_handler = signal(signo, _dispatch_wasi_signal_handler);
+		if (prev_sig_handler == SIG_ERR) {
+			DISPATCH_CLIENT_CRASH(ident, "signal() failed for dispatch "
+					"signal source");
+		}
 		break;
 	}
 #endif // _WASI_EMULATED_SIGNAL
@@ -205,6 +267,9 @@ _dispatch_muxnote_create(dispatch_unote_t du, uint16_t events)
 	dmn->dmn_filter = filter;
 	dmn->dmn_events = events;
 	dmn->dmn_always_ready = always_ready;
+#ifdef _WASI_EMULATED_SIGNAL
+	dmn->dmn_prev_sig_handler = prev_sig_handler;
+#endif
 	return dmn;
 }
 
@@ -279,8 +344,15 @@ _dispatch_unote_unregister_muxed(dispatch_unote_t du)
 			LIST_EMPTY(&dmn->dmn_writers_head)) {
 #ifdef _WASI_EMULATED_SIGNAL
 		if (dmn->dmn_filter == EVFILT_SIGNAL) {
-			signal((int)dmn->dmn_ident, SIG_DFL);
+			// restore the application's disposition, drop this signal's
+			// undelivered count, and keep the aggregate latch truthful
+			signal((int)dmn->dmn_ident, dmn->dmn_prev_sig_handler);
 			_dispatch_wasi_signal_pending[dmn->dmn_ident] = 0;
+			bool any = false;
+			for (int s = 1; s < NSIG; s++) {
+				any = any || _dispatch_wasi_signal_pending[s] != 0;
+			}
+			_dispatch_wasi_signal_pending_any = any;
 		}
 #endif
 		LIST_REMOVE(dmn, dmn_list);
@@ -369,10 +441,13 @@ _dispatch_wasi_merge_pending_signals(void)
 	for (int signo = 1; signo < NSIG; signo++) {
 		unsigned long count = _dispatch_wasi_signal_pending[signo];
 		if (!count) continue;
+		// consume unconditionally: a count with no live muxnote must not
+		// linger and merge as phantom deliveries into a source registered
+		// later for the same signal
+		_dispatch_wasi_signal_pending[signo] = 0;
 		dispatch_muxnote_t dmn =
 				_dispatch_muxnote_find((uint32_t)signo, EVFILT_SIGNAL);
 		if (!dmn) continue;
-		_dispatch_wasi_signal_pending[signo] = 0;
 		dispatch_unote_linkage_t dul, dul_next;
 		LIST_FOREACH_SAFE(dul, &dmn->dmn_readers_head, du_link, dul_next) {
 			dispatch_unote_t du = _dispatch_unote_linkage_get_unote(dul);
@@ -429,11 +504,33 @@ _dispatch_wasi_poll_harvest(int timeout_ms)
 	return merged;
 }
 
+// Poll set storage, grown geometrically and reused across harvests: the
+// armed-source count is unbounded (it tracks client registrations), so a
+// fixed cap would be a load-dependent crash at an arbitrary wait point.
+static struct pollfd *_dispatch_wasi_pfds;
+static dispatch_muxnote_t *_dispatch_wasi_pfd_dmn;
+static size_t _dispatch_wasi_pfd_capacity;
+
+static void
+_dispatch_wasi_pollset_reserve(size_t cnt)
+{
+	if (likely(cnt < _dispatch_wasi_pfd_capacity)) return;
+	size_t cap = _dispatch_wasi_pfd_capacity ? _dispatch_wasi_pfd_capacity : 16;
+	while (cap <= cnt) cap *= 2;
+	struct pollfd *pfds = realloc(_dispatch_wasi_pfds, cap * sizeof(*pfds));
+	dispatch_muxnote_t *dmns = realloc(_dispatch_wasi_pfd_dmn,
+			cap * sizeof(*dmns));
+	if (unlikely(!pfds || !dmns)) {
+		DISPATCH_INTERNAL_CRASH(cap, "failed to grow the WASI poll set");
+	}
+	_dispatch_wasi_pfds = pfds;
+	_dispatch_wasi_pfd_dmn = dmns;
+	_dispatch_wasi_pfd_capacity = cap;
+}
+
 static bool
 _dispatch_wasi_poll_harvest_locked(int timeout_ms)
 {
-	struct pollfd pfds[64];
-	dispatch_muxnote_t pfd_dmn[64];
 	dispatch_muxnote_t dmn, dmn_next;
 	bool merged = false;
 
@@ -451,17 +548,16 @@ _dispatch_wasi_poll_harvest_locked(int timeout_ms)
 			merged = true;
 			continue;
 		}
-		if (cnt >= countof(pfds)) {
-			DISPATCH_INTERNAL_CRASH(cnt, "too many armed file-descriptor "
-					"dispatch sources for the WASI poll set");
-		}
-		pfds[cnt].fd = (int)dmn->dmn_ident;
-		pfds[cnt].events = (short)events;
-		pfds[cnt].revents = 0;
-		pfd_dmn[cnt] = dmn;
+		_dispatch_wasi_pollset_reserve(cnt);
+		_dispatch_wasi_pfds[cnt].fd = (int)dmn->dmn_ident;
+		_dispatch_wasi_pfds[cnt].events = (short)events;
+		_dispatch_wasi_pfds[cnt].revents = 0;
+		_dispatch_wasi_pfd_dmn[cnt] = dmn;
 		cnt++;
 	}
 	if (!cnt) return merged;
+	struct pollfd *pfds = _dispatch_wasi_pfds;
+	dispatch_muxnote_t *pfd_dmn = _dispatch_wasi_pfd_dmn;
 
 	int rc = poll(pfds, cnt, merged ? 0 : timeout_ms);
 	if (rc < 0) {
@@ -697,18 +793,14 @@ _dispatch_wasi_root_queue_poke(dispatch_queue_global_t dq)
 		DISPATCH_INTERNAL_CRASH(dq, "Poke of a non-global root queue on WASI");
 	}
 	_dispatch_wasi_root_pending[idx] = true;
-	if (!_dispatch_wasi_draining && !_dispatch_wasi_harvesting) {
-		_dispatch_wasi_drain();
-	}
+	_dispatch_wasi_drain_unless_deferred();
 }
 
 void
 _dispatch_wasi_main_queue_poke(void)
 {
 	_dispatch_wasi_main_pending = true;
-	if (!_dispatch_wasi_draining && !_dispatch_wasi_harvesting) {
-		_dispatch_wasi_drain();
-	}
+	_dispatch_wasi_drain_unless_deferred();
 }
 
 #pragma mark dispatch_loop
@@ -724,9 +816,7 @@ _dispatch_event_loop_poke(dispatch_wlh_t wlh,
 {
 	if (wlh == DISPATCH_WLH_MANAGER) {
 		_dispatch_wasi_mgr_pending = true;
-		if (!_dispatch_wasi_draining && !_dispatch_wasi_harvesting) {
-			_dispatch_wasi_drain();
-		}
+		_dispatch_wasi_drain_unless_deferred();
 		return;
 	}
 	// every poke caller compiled outside DISPATCH_USE_KEVENT_WORKLOOP
