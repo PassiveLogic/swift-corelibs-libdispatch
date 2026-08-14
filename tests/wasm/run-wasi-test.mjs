@@ -17,15 +17,36 @@ async function runGuest(binary) {
   }
 }
 
-async function runChecked(mode, binary, ...expected) {
+async function runChecked(...argv) {
+  // --stdin-after <ms>:<text> pipes <text> to the guest's stdin after a
+  // delay, so readiness-driven tests prove the guest genuinely parks in the
+  // host poll instead of finding data already buffered.
+  let stdinAfter = null;
+  if (argv[0] === '--stdin-after') {
+    const spec = argv[1] ?? '';
+    const colon = spec.indexOf(':');
+    stdinAfter = { ms: Number(spec.slice(0, colon)), text: spec.slice(colon + 1) };
+    argv = argv.slice(2);
+    if (colon < 1 || !Number.isFinite(stdinAfter.ms)) {
+      console.error('bad --stdin-after spec, want <ms>:<text>');
+      return 2;
+    }
+  }
+  const [mode, binary, ...expected] = argv;
   if (!['success', 'crash'].includes(mode) || !binary || expected.length === 0) {
-    console.error('usage: run-wasi-test.mjs <success|crash> <binary> <expected text>...');
+    console.error('usage: run-wasi-test.mjs [--stdin-after <ms>:<text>] <success|crash> <binary> <expected text>...');
     return 2;
   }
 
   const child = spawn(process.execPath, [runner, '--guest', binary], {
-    stdio: ['ignore', 'pipe', 'pipe'],
+    stdio: [stdinAfter ? 'pipe' : 'ignore', 'pipe', 'pipe'],
   });
+  if (stdinAfter) {
+    setTimeout(() => {
+      child.stdin.write(stdinAfter.text);
+      child.stdin.end();
+    }, stdinAfter.ms);
+  }
   let stdout = '';
   let stderr = '';
   child.stdout.setEncoding('utf8');

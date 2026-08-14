@@ -325,8 +325,19 @@ uint64_t _dispatch_wasi_next_timer_ns(void);
 void _dispatch_wasi_sleep_until(uint64_t uptime_ns);
 // Sleeps until min(deadline_uptime_ns, nearest armed dispatch timer): a
 // plain sleep to the deadline would make timed waits sleep through timers
-// that are due earlier.
+// that are due earlier. Also wakes for file-descriptor readiness and pending
+// emulated signals (see _dispatch_wasi_wait_for_events).
 void _dispatch_wasi_sleep_briefly_or_until(uint64_t deadline_uptime_ns);
+// Returns true when progress can come from an event source rather than a
+// timer or queued work: an armed file-descriptor source (pollable or
+// always-ready) or an already-raised emulated signal. Armed-but-idle signal
+// sources do not count: nothing can raise() while the sole thread is parked.
+bool _dispatch_wasi_has_event_sources(void);
+// Waits until the given uptime deadline or until an armed event source
+// produces work, whichever is first; merged events queue their handlers for
+// the caller's next drain. deadline 0 waits for events alone and requires
+// _dispatch_wasi_has_event_sources() to be true.
+void _dispatch_wasi_wait_for_events(uint64_t deadline_uptime_ns);
 #endif
 
 void _dispatch_sema4_dispose_slow(_dispatch_sema4_t *sema, int policy);

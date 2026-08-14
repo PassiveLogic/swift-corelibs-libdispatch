@@ -29,9 +29,11 @@ endfunction()
 
 add_wasi_test(dispatch_wasi_smoke smoke.c success "ALL PASS (9/9)" 20)
 add_wasi_test(dispatch_wasi_unsupported_source unsupported-source.c crash
-  "file-descriptor and signal dispatch sources are unsupported on single-threaded WASI" 5)
-add_wasi_test(dispatch_wasi_signal_source signal-source.c crash
-  "file-descriptor and signal dispatch sources are unsupported on single-threaded WASI" 5)
+  "dispatch source file descriptor is not open" 5)
+add_wasi_test(dispatch_wasi_signal_source signal-source.c success
+  "signal source OK" 5)
+add_wasi_test(dispatch_wasi_write_source write-source.c success
+  "write source OK" 5)
 add_wasi_test(dispatch_wasi_nested_wait nested-wait.c crash
   "semaphore wait from within a drained work item" 5)
 add_wasi_test(dispatch_wasi_nested_timed_wait nested-timed-wait.c success "probe OK" 5)
@@ -53,6 +55,29 @@ add_wasi_test(dispatch_wasi_blocking_waits blocking-waits.c success
 add_wasi_test(dispatch_wasi_api_surface api-surface.c success "api surface OK" 10)
 add_wasi_test(dispatch_wasi_assert_queue assert-queue.c crash
   "Block was expected to execute on queue" 5 "assert on-queue OK")
+
+# Readiness-driven tests: the runner pipes stdin only after a delay, so the
+# guest must park in the host poll and wake on fd readiness to pass.
+add_executable(dispatch_wasi_read_source read-source.c)
+add_executable(dispatch_wasi_fd_wakeup_wait fd-wakeup-wait.c)
+foreach(_stdin_test dispatch_wasi_read_source dispatch_wasi_fd_wakeup_wait)
+  target_compile_options(${_stdin_test} PRIVATE -fblocks -Wall)
+  target_link_libraries(${_stdin_test} PRIVATE dispatch)
+  target_link_options(${_stdin_test} PRIVATE
+    -nodefaultlibs
+    -lc
+    "${DISPATCH_WASI_BUILTINS}")
+endforeach()
+add_test(NAME dispatch_wasi_read_source
+  COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
+    --stdin-after "250:ping" success "$<TARGET_FILE:dispatch_wasi_read_source>"
+    "read source OK" "read source armed")
+add_test(NAME dispatch_wasi_fd_wakeup_wait
+  COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
+    --stdin-after "250:ping" success "$<TARGET_FILE:dispatch_wasi_fd_wakeup_wait>"
+    "fd wakeup OK" "waiting on semaphore")
+set_tests_properties(dispatch_wasi_read_source dispatch_wasi_fd_wakeup_wait
+  PROPERTIES TIMEOUT 10)
 
 add_executable(dispatch_wasi_clean_c_consumer clean-consumer.c)
 target_compile_options(dispatch_wasi_clean_c_consumer PRIVATE -fblocks -Wall)
