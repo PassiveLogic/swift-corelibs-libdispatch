@@ -37,18 +37,51 @@ layouts can override them with `SWIFT_WASI_STATIC_RESOURCES_OVERRIDE` and
 ## WASI semantics
 
 Single-threaded WASI drains queues and timers cooperatively. `dispatch_main()`
-drains useful main-queue work and armed timers, then traps with
-`dispatch_main(): no runnable work on single-threaded WASI` when the process is
-fully idle. It cannot block forever because there is no other thread that can
-make progress.
+drains useful main-queue work, then parks in the host on armed timers and
+event sources; it traps with
+`dispatch_main(): no runnable work on single-threaded WASI` only when the
+process is fully idle with no timer and no event source armed. It cannot block
+forever because nothing else could ever make progress.
 
-Read, write, and signal dispatch source types remain available to C and Swift,
-but they fail with a named diagnostic when registration reaches the WASI event
-backend. Swift read/write source factories and `DispatchIO` therefore remain
-visible but also fail loudly when they attempt unsupported file-descriptor
-registration. The C `DISPATCH_SOURCE_TYPE_PROC` declaration has no linkable
-WASI definition because process sources are implemented only by the kevent
-backend. Swift process and vnode source APIs are compiled out for WASI.
+**Read and write dispatch sources are supported.** They ride preview1's
+`poll_oneoff` fd subscriptions (through wasi-libc `poll(2)`, so the same code
+carries to wasip2's `wasi:io/poll` unchanged) and are merged into the
+cooperative drain at every wait point: `dispatch_main()`, blocking semaphore /
+group / block waits, and timed waits all wake on fd readiness. A blocking wait
+whose progress can only come from an armed fd source parks in the host poll
+instead of crashing. Guardrails:
+
+- Regular files and directories are never polled (POSIX always-ready; Node's
+  uvwasi also rejects fd subscriptions for them) — they merge as
+  level-triggered always-ready, like the epoll backend's `EPERM` handling.
+- A capability probe at registration crashes with a named diagnostic on hosts
+  whose `poll_oneoff` lacks fd subscriptions (browser WASI shims), instead of
+  hanging later. An fd that is not open crashes at registration; an fd closed
+  while armed crashes at the next wait.
+- Indefinite waits use a bounded (1 hour) poll slice in a loop rather than an
+  infinite timeout, which WasmKit's host mishandles.
+- When no fd source is armed, idle waits remain a single `poll_oneoff` clock
+  subscription (nanosecond-precision `nanosleep`), which even single-
+  subscription shims support.
+
+**Signal dispatch sources are supported for in-process `raise()`**, riding
+wasi-libc's `_WASI_EMULATED_SIGNAL` (the build defines and links it): a
+`raise()` anywhere in the guest invokes the emulated handler synchronously,
+and the armed source's handler fires on the next drain with the accumulated
+count. This works on every runtime, including browser shims, because no host
+poll support is involved. There is no asynchronous or cross-process signal
+delivery on any current or announced WASI version, and none is possible here.
+
+Runtime support for fd readiness (empirically verified): wasmtime, Node's
+built-in `node:wasi`/uvwasi (except regular files, which the always-ready path
+covers), and WasmKit all support it; `@bjorn3/browser_wasi_shim` and `uwasi`
+do not (fd sources crash loudly at registration there; timers still work on
+the former).
+
+The C `DISPATCH_SOURCE_TYPE_PROC` declaration has no linkable WASI definition
+because process sources are implemented only by the kevent backend, and WASI
+has no processes. Swift process and vnode source APIs are compiled out for
+WASI.
 
 Uptime and wall-clock timers fire normally. The WASI backend converts each wall
 timer deadline to the uptime clock when it is armed, so later host wall-clock
@@ -95,6 +128,20 @@ WASI port candidates (PRs #1 and #2):
   on-queue; guards the tid-vs-`DLOCK_OWNER_MASK` encoding in `shims/lock.h`
   (a constant tid that masks to zero makes every unlocked queue look owned
   by the current thread).
+
+Event-source tests:
+
+- `write-source.c` — a write source on stdout fires through poll readiness,
+  rearms level-triggered after each `EV_DISPATCH` delivery, and parks
+  `dispatch_main()` instead of trapping.
+- `read-source.c`, `fd-wakeup-wait.c` — the runner pipes stdin only after a
+  delay (`--stdin-after`), so passing proves the guest genuinely parks in the
+  host poll: once under `dispatch_main()`, once inside a blocking
+  `dispatch_semaphore_wait(FOREVER)` satisfied by the read source's handler.
+- `signal-source.c` — two `raise(SIGUSR1)` from a queued item deliver one
+  handler invocation with count 2.
+- `unsupported-source.c` — a read source on an fd that is not open crashes at
+  registration with a named diagnostic.
 
 WASI selects `dispatch/wasi/module.modulemap` so static Swift clients autolink
 BlocksRuntime and the WASI emulation archives without changing the generic
