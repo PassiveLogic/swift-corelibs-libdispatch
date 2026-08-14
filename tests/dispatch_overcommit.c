@@ -25,7 +25,7 @@
 #include <dispatch/dispatch.h>
 #include <dispatch/private.h>
 #include <stdio.h>
-#if defined(__unix__) || (defined(__APPLE__) && defined(__MACH__))
+#if defined(__unix__) || defined(__wasi__) || (defined(__APPLE__) && defined(__MACH__))
 #include <unistd.h>
 #endif
 #include <stdlib.h>
