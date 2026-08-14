@@ -77,6 +77,25 @@ order, fairness across self-replenishing roots, uptime and wall timers, signal
 and file-descriptor source failures, and both useful and immediately idle
 `dispatch_main()` paths.
 
+Additional focused tests pin behaviors that differentiated the two original
+WASI port candidates (PRs #1 and #2):
+
+- `sync-inline.c`, `main-queue-order.c` — inline `dispatch_sync` without a
+  drain, and thread-bound main-queue FIFO order (adapted from PR #1's tests).
+- `blocking-waits.c` — blocking-wait contracts: `dispatch_block_wait` runs the
+  queued block, `dispatch_group_wait(FOREVER)` returns once the group empties,
+  and a timed semaphore wait consumes its full timeout instead of returning
+  early.
+- `api-surface.c` — one binary sweeping the object/attr/block/data/group/
+  source families: `dispatch_once`, queue specifics, initially-inactive +
+  `dispatch_activate`, suspend/resume, finalizers, `DispatchData` operations,
+  block cancel/testcancel, user-data sources with registration/event/cancel
+  handlers, timer sources, and wall-clock `dispatch_after`.
+- `assert-queue.c` — `dispatch_assert_queue` must trap off-queue and pass
+  on-queue; guards the tid-vs-`DLOCK_OWNER_MASK` encoding in `shims/lock.h`
+  (a constant tid that masks to zero makes every unlocked queue look owned
+  by the current thread).
+
 WASI selects `dispatch/wasi/module.modulemap` so static Swift clients autolink
 BlocksRuntime and the WASI emulation archives without changing the generic
 module map used by Linux and Windows.
