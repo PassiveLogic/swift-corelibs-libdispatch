@@ -73,6 +73,8 @@ add_wasi_test(dispatch_wasi_api_surface api-surface.c success "api surface OK" 1
 add_wasi_test(dispatch_wasi_assert_queue assert-queue.c crash
   "Block was expected to execute on queue" 5 "assert on-queue OK")
 add_wasi_test(dispatch_wasi_eager_drain eager-drain.c success "eager drain OK" 5)
+add_wasi_test(dispatch_wasi_specific_destructor specific-destructor.c success
+  "specific destructor OK" 5)
 
 # Readiness-driven tests: the runner pipes stdin only after a delay, so the
 # guest must park in the host poll and wake on fd readiness to pass.
