@@ -382,28 +382,61 @@ _dispatch_sema4_signal(_dispatch_sema4_t *sema, long count)
 	(void)os_atomic_add(sema, (uint32_t)count, release);
 }
 
+// One park step of the cooperative wait policy, shared by every blocking
+// wait below. Callers first try their predicate and _dispatch_wasi_drain_one;
+// when neither made progress, this either sleeps (a timed wait honors its own
+// deadline; a nested timed wait must not sleep toward a timer, which cannot
+// merge while nested) or reports why an indefinite park would be a provable
+// deadlock, so the caller can crash with its own named diagnostic
+// (DISPATCH_CLIENT_CRASH requires literal messages).
+typedef enum {
+	_dispatch_wasi_park_ok,
+	_dispatch_wasi_park_nested,	// indefinite wait from inside a drain
+	_dispatch_wasi_park_stuck,	// nothing can ever produce progress
+} _dispatch_wasi_park_result_t;
+
+DISPATCH_NOINLINE
+static _dispatch_wasi_park_result_t
+_dispatch_wasi_wait_park(uint64_t nsec)
+{
+	if (nsec == DISPATCH_TIME_FOREVER) {
+		if (_dispatch_wasi_in_drain()) {
+			// nested waits can never be satisfied: no other work or timer
+			// can run while a drained item blocks the sole thread
+			return _dispatch_wasi_park_nested;
+		}
+		uint64_t deadline = _dispatch_wasi_next_timer_ns();
+		if (!deadline && !_dispatch_wasi_has_event_sources()) {
+			return _dispatch_wasi_park_stuck;
+		}
+		// an armed timer, an armed fd source, or a pending emulated signal
+		// can still produce the work that satisfies this wait
+		_dispatch_wasi_wait_for_events(deadline);
+	} else if (_dispatch_wasi_in_drain()) {
+		_dispatch_wasi_sleep_until(_dispatch_uptime() + nsec);
+	} else {
+		_dispatch_wasi_sleep_briefly_or_until(_dispatch_uptime() + nsec);
+	}
+	return _dispatch_wasi_park_ok;
+}
+
 void
 _dispatch_sema4_wait(_dispatch_sema4_t *sema)
 {
 	for (;;) {
 		if (_dispatch_sema4_try_consume(sema)) return;
-		if (_dispatch_wasi_in_drain()) {
-			// nested waits can never be satisfied: no other work or timer
-			// can run while a drained item blocks the sole thread
+		if (_dispatch_wasi_drain_one()) continue;
+		switch (_dispatch_wasi_wait_park(DISPATCH_TIME_FOREVER)) {
+		case _dispatch_wasi_park_ok:
+			break;
+		case _dispatch_wasi_park_nested:
 			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
 					"semaphore wait from within a drained work item");
+		case _dispatch_wasi_park_stuck:
+			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
+					"semaphore wait with no runnable work, timers, or "
+					"event sources");
 		}
-		if (_dispatch_wasi_drain_one()) continue;
-		uint64_t deadline = _dispatch_wasi_next_timer_ns();
-		if (deadline || _dispatch_wasi_has_event_sources()) {
-			// an armed timer, an armed fd source, or a pending emulated
-			// signal can still produce the work that signals this semaphore
-			_dispatch_wasi_wait_for_events(deadline);
-			continue;
-		}
-		DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
-				"semaphore wait with no runnable work, timers, or "
-				"event sources");
 	}
 }
 
@@ -415,28 +448,17 @@ _dispatch_sema4_timedwait(_dispatch_sema4_t *sema, dispatch_time_t timeout)
 		if (_dispatch_wasi_drain_one()) continue;
 		uint64_t nsec = _dispatch_timeout(timeout);
 		if (nsec == 0) break;
-		if (nsec == DISPATCH_TIME_FOREVER) {
-			if (_dispatch_wasi_in_drain()) {
-				// nested waits can never be satisfied: no other work or
-				// timer can run while a drained item blocks the sole
-				// thread
-				DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
-						"semaphore timedwait from within a drained "
-						"work item");
-			}
-			uint64_t deadline = _dispatch_wasi_next_timer_ns();
-			if (!deadline && !_dispatch_wasi_has_event_sources()) {
-				DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
-						"semaphore timedwait with no runnable work, "
-						"timers, or event sources");
-			}
-			_dispatch_wasi_wait_for_events(deadline);
-		} else if (_dispatch_wasi_in_drain()) {
-			// timers cannot merge while nested: sleeping toward one would
-			// spin at its deadline; honor only the wait's own deadline
-			_dispatch_wasi_sleep_until(_dispatch_uptime() + nsec);
-		} else {
-			_dispatch_wasi_sleep_briefly_or_until(_dispatch_uptime() + nsec);
+		switch (_dispatch_wasi_wait_park(nsec)) {
+		case _dispatch_wasi_park_ok:
+			break;
+		case _dispatch_wasi_park_nested:
+			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
+					"semaphore timedwait from within a drained "
+					"work item");
+		case _dispatch_wasi_park_stuck:
+			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
+					"semaphore timedwait with no runnable work, "
+					"timers, or event sources");
 		}
 	} while (_dispatch_timeout(timeout));
 	return true;
@@ -674,32 +696,17 @@ _dispatch_wait_on_address(uint32_t volatile *_address, uint32_t value,
 			return ETIMEDOUT;
 		}
 		if (_dispatch_wasi_drain_one()) continue;
-		if (nsecs != DISPATCH_TIME_FOREVER) {
-			if (_dispatch_wasi_in_drain()) {
-				// timers cannot merge while nested: sleeping toward one
-				// would spin at its deadline; honor only the wait's own
-				// deadline
-				_dispatch_wasi_sleep_until(_dispatch_uptime() + nsecs);
-			} else {
-				_dispatch_wasi_sleep_briefly_or_until(
-						_dispatch_uptime() + nsecs);
-			}
-		} else {
-			if (_dispatch_wasi_in_drain()) {
-				// nested waits can never be satisfied: no other work or
-				// timer can run while a drained item blocks the sole
-				// thread
-				DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
-						"_dispatch_wait_on_address() from within a drained "
-						"work item");
-			}
-			uint64_t deadline = _dispatch_wasi_next_timer_ns();
-			if (!deadline && !_dispatch_wasi_has_event_sources()) {
-				DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
-						"_dispatch_wait_on_address() with no runnable work, "
-						"timers, or event sources");
-			}
-			_dispatch_wasi_wait_for_events(deadline);
+		switch (_dispatch_wasi_wait_park(nsecs)) {
+		case _dispatch_wasi_park_ok:
+			break;
+		case _dispatch_wasi_park_nested:
+			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
+					"_dispatch_wait_on_address() from within a drained "
+					"work item");
+		case _dispatch_wasi_park_stuck:
+			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
+					"_dispatch_wait_on_address() with no runnable work, "
+					"timers, or event sources");
 		}
 	}
 	return 0;

@@ -68,16 +68,21 @@ else()
 endif()
 set(SWIFT_WASI_CLANG_RESOURCES
   "${SWIFT_WASI_SDK_PATH}/swift.xctoolchain/usr/lib/clang")
-if(NOT IS_DIRECTORY "${SWIFT_WASI_STATIC_RESOURCES}")
-  message(FATAL_ERROR
-    "Swift static resource directory does not exist: ${SWIFT_WASI_STATIC_RESOURCES}")
-endif()
 if(NOT EXISTS "${DISPATCH_WASI_BUILTINS}")
   message(FATAL_ERROR "WASI builtins archive does not exist: ${DISPATCH_WASI_BUILTINS}")
 endif()
-if(NOT IS_DIRECTORY "${SWIFT_WASI_CLANG_RESOURCES}")
-  message(FATAL_ERROR
-    "WASI Clang resource directory does not exist: ${SWIFT_WASI_CLANG_RESOURCES}")
+# The Swift static resources and the Swift clang resource dir are only used
+# when building the overlay and its consumers; a C-only build must not
+# require them (they may be absent from a trimmed or non-Swift SDK layout).
+if(ENABLE_SWIFT)
+  if(NOT IS_DIRECTORY "${SWIFT_WASI_STATIC_RESOURCES}")
+    message(FATAL_ERROR
+      "Swift static resource directory does not exist: ${SWIFT_WASI_STATIC_RESOURCES}")
+  endif()
+  if(NOT IS_DIRECTORY "${SWIFT_WASI_CLANG_RESOURCES}")
+    message(FATAL_ERROR
+      "WASI Clang resource directory does not exist: ${SWIFT_WASI_CLANG_RESOURCES}")
+  endif()
 endif()
 
 set(CMAKE_C_COMPILER "${_dispatch_wasi_clang}")

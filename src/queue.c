@@ -7022,16 +7022,22 @@ _dispatch_main_queue_drain(dispatch_queue_main_t dq)
 	}
 
 	_dispatch_perfmon_start_notrace();
+#if defined(__wasi__)
+#define _DISPATCH_MAIN_QUEUE_DRAIN_CALLER "_dispatch_wasi_main_queue_drain"
+#else
+#define _DISPATCH_MAIN_QUEUE_DRAIN_CALLER "_dispatch_main_queue_callback_4CF"
+#endif
 	if (unlikely(!_dispatch_queue_is_thread_bound(dq))) {
-		DISPATCH_CLIENT_CRASH(0, "_dispatch_main_queue_callback_4CF called"
+		DISPATCH_CLIENT_CRASH(0, _DISPATCH_MAIN_QUEUE_DRAIN_CALLER " called"
 				" after dispatch_main()");
 	}
 	uint64_t dq_state = os_atomic_load2o(dq, dq_state, relaxed);
 	if (unlikely(!_dq_state_drain_locked_by_self(dq_state))) {
 		DISPATCH_CLIENT_CRASH((uintptr_t)dq_state,
-				"_dispatch_main_queue_callback_4CF called"
+				_DISPATCH_MAIN_QUEUE_DRAIN_CALLER " called"
 				" from the wrong thread");
 	}
+#undef _DISPATCH_MAIN_QUEUE_DRAIN_CALLER
 
 #if DISPATCH_COCOA_COMPAT
 	dispatch_once_f(&_dispatch_main_q_handle_pred, dq,

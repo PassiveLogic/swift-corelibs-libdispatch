@@ -5,11 +5,31 @@ import { fileURLToPath } from 'node:url';
 
 const runner = fileURLToPath(import.meta.url);
 
-async function runGuest(binary) {
+async function runGuest(binary, denyFdPoll) {
   const wasi = new WASI({ version: 'preview1', args: [binary], env: {} });
+  const importObject = wasi.getImportObject();
+  let memory = null;
+  if (denyFdPoll) {
+    // Emulate a limited host (browser WASI shims): reject poll_oneoff calls
+    // carrying fd_read/fd_write subscriptions with ENOTSUP, pass clock-only
+    // sets through. Preview1 subscriptions are 48 bytes with the union tag
+    // at byte 8 (0 = clock).
+    const preview1 = importObject.wasi_snapshot_preview1;
+    const realPoll = preview1.poll_oneoff;
+    preview1.poll_oneoff = (inPtr, outPtr, nsubscriptions, neventsPtr) => {
+      const view = new DataView(memory.buffer);
+      for (let i = 0; i < nsubscriptions; i++) {
+        if (view.getUint8(inPtr + i * 48 + 8) !== 0) {
+          return 58; // __WASI_ERRNO_NOTSUP
+        }
+      }
+      return realPoll(inPtr, outPtr, nsubscriptions, neventsPtr);
+    };
+  }
   try {
     const module = await WebAssembly.compile(await readFile(binary));
-    const instance = await WebAssembly.instantiate(module, wasi.getImportObject());
+    const instance = await WebAssembly.instantiate(module, importObject);
+    memory = instance.exports.memory;
     process.exitCode = wasi.start(instance);
   } catch (error) {
     console.error(`[trap] ${error.message}`);
@@ -22,23 +42,34 @@ async function runChecked(...argv) {
   // delay, so readiness-driven tests prove the guest genuinely parks in the
   // host poll instead of finding data already buffered.
   let stdinAfter = null;
-  if (argv[0] === '--stdin-after') {
-    const spec = argv[1] ?? '';
-    const colon = spec.indexOf(':');
-    stdinAfter = { ms: Number(spec.slice(0, colon)), text: spec.slice(colon + 1) };
-    argv = argv.slice(2);
-    if (colon < 1 || !Number.isFinite(stdinAfter.ms)) {
-      console.error('bad --stdin-after spec, want <ms>:<text>');
-      return 2;
+  let denyFdPoll = false;
+  for (;;) {
+    if (argv[0] === '--stdin-after') {
+      const spec = argv[1] ?? '';
+      const colon = spec.indexOf(':');
+      stdinAfter = { ms: Number(spec.slice(0, colon)), text: spec.slice(colon + 1) };
+      argv = argv.slice(2);
+      if (colon < 1 || !Number.isFinite(stdinAfter.ms)) {
+        console.error('bad --stdin-after spec, want <ms>:<text>');
+        return 2;
+      }
+    } else if (argv[0] === '--deny-fd-poll') {
+      denyFdPoll = true;
+      argv = argv.slice(1);
+    } else {
+      break;
     }
   }
   const [mode, binary, ...expected] = argv;
   if (!['success', 'crash'].includes(mode) || !binary || expected.length === 0) {
-    console.error('usage: run-wasi-test.mjs [--stdin-after <ms>:<text>] <success|crash> <binary> <expected text>...');
+    console.error('usage: run-wasi-test.mjs [--stdin-after <ms>:<text>] [--deny-fd-poll] <success|crash> <binary> <expected text>...');
     return 2;
   }
 
-  const child = spawn(process.execPath, [runner, '--guest', binary], {
+  const guestArgs = ['--guest'];
+  if (denyFdPoll) guestArgs.push('--deny-fd-poll');
+  guestArgs.push(binary);
+  const child = spawn(process.execPath, [runner, ...guestArgs], {
     stdio: [stdinAfter ? 'pipe' : 'ignore', 'pipe', 'pipe'],
   });
   let stdinTimer = null;
@@ -86,7 +117,8 @@ async function runChecked(...argv) {
 }
 
 if (process.argv[2] === '--guest') {
-  await runGuest(process.argv[3]);
+  const denyFdPoll = process.argv[3] === '--deny-fd-poll';
+  await runGuest(process.argv[denyFdPoll ? 4 : 3], denyFdPoll);
 } else {
   process.exitCode = await runChecked(...process.argv.slice(2));
 }
