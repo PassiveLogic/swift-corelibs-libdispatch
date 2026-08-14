@@ -1,15 +1,29 @@
-find_program(NODE_EXECUTABLE node REQUIRED)
-execute_process(
-  COMMAND "${NODE_EXECUTABLE}" --version
-  RESULT_VARIABLE NODE_VERSION_RESULT
-  OUTPUT_VARIABLE NODE_VERSION
-  OUTPUT_STRIP_TRAILING_WHITESPACE)
-if(NOT NODE_VERSION_RESULT EQUAL 0)
-  message(FATAL_ERROR "Failed to query Node version with ${NODE_EXECUTABLE}")
-endif()
-string(REGEX REPLACE "^v" "" NODE_VERSION "${NODE_VERSION}")
-if(NODE_VERSION VERSION_LESS 19.8)
-  message(FATAL_ERROR "Node 19.8 or newer is required, found ${NODE_VERSION}")
+# Node drives the focused tests (it captures guest output and checks exit mode
+# plus expected markers). When Node is missing or too old, everything here
+# still builds and every test stays visible in ctest, just DISABLED — the same
+# shape tests/CMakeLists.txt uses when WASI_TEST_RUNNER is absent.
+set(DISPATCH_WASI_NODE_OK TRUE)
+find_program(NODE_EXECUTABLE node)
+if(NOT NODE_EXECUTABLE)
+  message(STATUS "Node not found; tests in tests/wasm are registered but disabled")
+  set(DISPATCH_WASI_NODE_OK FALSE)
+  set(NODE_EXECUTABLE node)
+else()
+  execute_process(
+    COMMAND "${NODE_EXECUTABLE}" --version
+    RESULT_VARIABLE NODE_VERSION_RESULT
+    OUTPUT_VARIABLE NODE_VERSION
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+  string(REGEX REPLACE "^v" "" NODE_VERSION "${NODE_VERSION}")
+  if(NOT NODE_VERSION_RESULT EQUAL 0)
+    message(STATUS "Failed to query Node version with ${NODE_EXECUTABLE}; "
+      "tests in tests/wasm are registered but disabled")
+    set(DISPATCH_WASI_NODE_OK FALSE)
+  elseif(NODE_VERSION VERSION_LESS 19.8)
+    message(STATUS "Node 19.8 or newer is required for tests/wasm, found "
+      "${NODE_VERSION}; tests are registered but disabled")
+    set(DISPATCH_WASI_NODE_OK FALSE)
+  endif()
 endif()
 
 function(add_wasi_test name source mode expected timeout)
@@ -25,6 +39,9 @@ function(add_wasi_test name source mode expected timeout)
       ${mode} "$<TARGET_FILE:${name}>" "${expected}" ${ARGN})
   set_tests_properties(${name} PROPERTIES
     TIMEOUT ${timeout})
+  if(NOT DISPATCH_WASI_NODE_OK)
+    set_tests_properties(${name} PROPERTIES DISABLED TRUE)
+  endif()
 endfunction()
 
 add_wasi_test(dispatch_wasi_smoke smoke.c success "ALL PASS (9/9)" 20)
@@ -55,6 +72,7 @@ add_wasi_test(dispatch_wasi_blocking_waits blocking-waits.c success
 add_wasi_test(dispatch_wasi_api_surface api-surface.c success "api surface OK" 10)
 add_wasi_test(dispatch_wasi_assert_queue assert-queue.c crash
   "Block was expected to execute on queue" 5 "assert on-queue OK")
+add_wasi_test(dispatch_wasi_eager_drain eager-drain.c success "eager drain OK" 5)
 
 # Readiness-driven tests: the runner pipes stdin only after a delay, so the
 # guest must park in the host poll and wake on fd readiness to pass.
@@ -158,3 +176,20 @@ set_tests_properties(
   dispatch_wasi_runner_missing_diagnostic
   dispatch_wasi_runner_missing_marker
   PROPERTIES TIMEOUT 20)
+
+if(NOT DISPATCH_WASI_NODE_OK)
+  # tests registered outside add_wasi_test()
+  set(_wasi_explicit_tests
+    dispatch_wasi_read_source
+    dispatch_wasi_fd_wakeup_wait
+    dispatch_wasi_clean_c_consumer
+    dispatch_wasi_runner_wrong_mode
+    dispatch_wasi_runner_missing_diagnostic
+    dispatch_wasi_runner_missing_marker)
+  if(ENABLE_SWIFT)
+    list(APPEND _wasi_explicit_tests
+      dispatch_wasi_clean_swift_consumer
+      dispatch_wasi_swift_autolink_consumer)
+  endif()
+  set_tests_properties(${_wasi_explicit_tests} PROPERTIES DISABLED TRUE)
+endif()

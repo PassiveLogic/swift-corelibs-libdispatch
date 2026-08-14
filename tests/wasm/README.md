@@ -7,7 +7,8 @@
 - CMake 3.31 or newer. This is the first release whose documentation recognizes
   `CMAKE_SYSTEM_NAME=WASI`.
 - Ninja 1.10 or newer
-- Node.js 19.8 or newer (runs the tests in this directory)
+- Node.js 19.8 or newer (runs the tests in this directory; when Node is
+  missing or too old these tests still build and are registered but disabled)
 - wasmtime, or another WASI runtime named with `-DWASI_TEST_RUNNER=...`
   (runs the WASI subset of the upstream test suite in `tests/`; when the
   runner is missing those tests are registered but disabled)
@@ -42,6 +43,38 @@ event sources; it traps with
 `dispatch_main(): no runnable work on single-threaded WASI` only when the
 process is fully idle with no timer and no event source armed. It cannot block
 forever because nothing else could ever make progress.
+
+**Eager submission is specified behavior, not an accident.** At top level
+(outside any drain), a block submitted with `dispatch_async` runs to
+completion on the submitting stack before the call returns. This is the port's
+one deliberate divergence from threaded Dispatch, and it is what makes the
+library usable in embedded hosts (browser modules, reactors) that never call
+`dispatch_main()`: without it, queued work would never execute there. The
+costs are named plainly: callbacks can re-enter code on the same stack that
+native callers do not expect to be re-entered there, and cross-queue ordering
+differs from threaded platforms (a `dispatch_group_notify` installed after the
+group already drained runs before later submissions). Blocks submitted from
+inside a running work item defer to the outer drain — there are no nested
+drains — and the outer drain resumes in category priority order: due timers,
+the manager queue, the main queue, then root queues by QoS. All of this is
+pinned by `eager-drain.c`; a change in these orderings is a behavior change,
+not an implementation detail.
+
+**Wall-clock timers are anchored at arm time — a documented WASI limitation.**
+A wall-deadline timer is converted to the uptime clock when it is armed, so a
+later host wall-clock adjustment does not reposition an armed timer (Darwin
+repositions them). This is deliberate: WASI has no clock-change notification
+mechanism, so tracking adjustments reliably is not possible; anchoring gives
+one predictable behavior instead of a racy approximation. `wall-timer.c`
+pins it.
+
+**wasip1-threads boundary.** The cooperative backend is for plain,
+single-threaded `wasip1` only, and the build enforces that: compiling with
+wasm atomics or `-pthread` (`__wasm_atomics__` / `_REENTRANT`) hits an
+`#error` in `event_wasi.c`. A future `wasip1-threads` port should not extend
+this backend — with real threads, the normal worker-pool model (internal
+pthread workqueue plus a poll-driven manager) is the right shape, and the
+compile-time guard is the seam where that fork happens.
 
 **Read and write dispatch sources are supported.** They ride preview1's
 `poll_oneoff` fd subscriptions (through wasi-libc `poll(2)`, so the same code
@@ -128,6 +161,9 @@ WASI port candidates (PRs #1 and #2):
   on-queue; guards the tid-vs-`DLOCK_OWNER_MASK` encoding in `shims/lock.h`
   (a constant tid that masks to zero makes every unlocked queue look owned
   by the current thread).
+- `eager-drain.c` — pins the eager-submission semantics described above:
+  top-level async runs before the call returns, nested submissions defer and
+  drain main-before-root, group notify precedes later submissions.
 
 Event-source tests:
 
