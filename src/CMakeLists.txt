@@ -38,6 +38,7 @@ add_library(dispatch
   event/event_epoll.c
   event/event_internal.h
   event/event_kevent.c
+  event/event_wasi.c
   event/event_windows.c
   firehose/firehose_internal.h
   shims/android_stubs.h
@@ -105,6 +106,17 @@ if(WIN32)
 elseif(ANDROID)
   target_compile_options(dispatch PRIVATE
     -U_GNU_SOURCE)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  target_compile_definitions(dispatch PRIVATE
+    DISPATCH_HW_CONFIG_UP=1)
+  target_compile_definitions(dispatch PUBLIC
+    "$<$<COMPILE_LANGUAGE:C,CXX>:_WASI_EMULATED_SIGNAL>"
+    "$<$<COMPILE_LANGUAGE:C,CXX>:_WASI_EMULATED_MMAN>"
+    "$<$<COMPILE_LANGUAGE:C,CXX>:_WASI_EMULATED_GETPID>")
+  target_compile_options(dispatch INTERFACE
+    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -D_WASI_EMULATED_SIGNAL>"
+    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -D_WASI_EMULATED_MMAN>"
+    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -D_WASI_EMULATED_GETPID>")
 endif()
 if(DISPATCH_ENABLE_ASSERTS)
   target_compile_definitions(dispatch PRIVATE
@@ -152,6 +164,12 @@ target_link_libraries(dispatch PRIVATE
   Threads::Threads)
 target_link_libraries(dispatch PUBLIC
   BlocksRuntime::BlocksRuntime)
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  target_link_libraries(dispatch PUBLIC
+    wasi-emulated-signal
+    wasi-emulated-mman
+    wasi-emulated-getpid)
+endif()
 if(WIN32)
   target_link_libraries(dispatch PRIVATE
     AdvAPI32
