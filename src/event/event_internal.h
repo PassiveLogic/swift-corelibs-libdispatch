@@ -706,11 +706,27 @@ void _dispatch_event_loop_drain_timers(dispatch_timer_heap_t dth, uint32_t count
 void _dispatch_wasi_drain(void);
 void _dispatch_wasi_root_queue_poke(dispatch_queue_global_t dq);
 void _dispatch_wasi_main_queue_poke(void);
+// Bracket a caller-held critical section entered outside any drain (an
+// inline-executed sync body, a once initializer, an object dispose, the
+// specifics-hash mutation): pokes inside only record pending work, and the
+// outermost undefer flushes it. See the policy comment in event_wasi.c.
+void _dispatch_wasi_defer_pokes(void);
+void _dispatch_wasi_undefer_pokes(void);
 // implemented in queue.c on behalf of the WASI event backend:
 void _dispatch_wasi_root_queue_drain(dispatch_queue_global_t dq);
 void _dispatch_wasi_mgr_queue_drain(void);
 void _dispatch_wasi_main_queue_drain(void);
 #endif // DISPATCH_EVENT_BACKEND_WASI
+
+// No-op on threaded platforms: pokes there wake other workers and never run
+// client code on the submitting stack, so critical sections need no bracket.
+#if DISPATCH_EVENT_BACKEND_WASI
+#define _dispatch_cooperative_pokes_defer()   _dispatch_wasi_defer_pokes()
+#define _dispatch_cooperative_pokes_undefer() _dispatch_wasi_undefer_pokes()
+#else
+#define _dispatch_cooperative_pokes_defer()   ((void)0)
+#define _dispatch_cooperative_pokes_undefer() ((void)0)
+#endif
 
 DISPATCH_ALWAYS_INLINE
 static inline void

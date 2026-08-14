@@ -1794,7 +1794,7 @@ _dispatch_sync_recurse(dispatch_lane_t dq, void *ctxt,
 
 DISPATCH_ALWAYS_INLINE
 static inline void
-_dispatch_barrier_sync_f_inline(dispatch_queue_t dq, void *ctxt,
+_dispatch_barrier_sync_f_inline_impl(dispatch_queue_t dq, void *ctxt,
 		dispatch_function_t func, uintptr_t dc_flags)
 {
 	dispatch_tid tid = _dispatch_tid_self();
@@ -1828,6 +1828,19 @@ _dispatch_barrier_sync_f_inline(dispatch_queue_t dq, void *ctxt,
 					dq, ctxt, func, dc_flags | DC_FLAG_BARRIER)));
 }
 
+DISPATCH_ALWAYS_INLINE
+static inline void
+_dispatch_barrier_sync_f_inline(dispatch_queue_t dq, void *ctxt,
+		dispatch_function_t func, uintptr_t dc_flags)
+{
+	// The body (and thus the client callout, on the inline paths) runs with
+	// the queue's barrier lock held: on cooperative single-threaded targets,
+	// pokes from inside it must defer to after the sync completes.
+	_dispatch_cooperative_pokes_defer();
+	_dispatch_barrier_sync_f_inline_impl(dq, ctxt, func, dc_flags);
+	_dispatch_cooperative_pokes_undefer();
+}
+
 DISPATCH_NOINLINE
 static void
 _dispatch_barrier_sync_f(dispatch_queue_t dq, void *ctxt,
@@ -1846,7 +1859,7 @@ dispatch_barrier_sync_f(dispatch_queue_t dq, void *ctxt,
 
 DISPATCH_ALWAYS_INLINE
 static inline void
-_dispatch_sync_f_inline(dispatch_queue_t dq, void *ctxt,
+_dispatch_sync_f_inline_impl(dispatch_queue_t dq, void *ctxt,
 		dispatch_function_t func, uintptr_t dc_flags)
 {
 	if (likely(dq->dq_width == 1)) {
@@ -1870,6 +1883,17 @@ _dispatch_sync_f_inline(dispatch_queue_t dq, void *ctxt,
 	_dispatch_introspection_sync_begin(dl);
 	_dispatch_sync_invoke_and_complete(dl, ctxt, func DISPATCH_TRACE_ARG(
 			_dispatch_trace_item_sync_push_pop(dq, ctxt, func, dc_flags)));
+}
+
+DISPATCH_ALWAYS_INLINE
+static inline void
+_dispatch_sync_f_inline(dispatch_queue_t dq, void *ctxt,
+		dispatch_function_t func, uintptr_t dc_flags)
+{
+	// see _dispatch_barrier_sync_f_inline
+	_dispatch_cooperative_pokes_defer();
+	_dispatch_sync_f_inline_impl(dq, ctxt, func, dc_flags);
+	_dispatch_cooperative_pokes_undefer();
 }
 
 DISPATCH_NOINLINE
@@ -2099,7 +2123,11 @@ _dispatch_async_and_wait_f(dispatch_queue_t dq,
 		.dsc_waiter  = tid,
 	};
 
-	return _dispatch_async_and_wait_recurse(dq, &dsc, tid, dc_flags);
+	// see _dispatch_barrier_sync_f_inline: the invoke can run inline with
+	// the acquired width/barrier held
+	_dispatch_cooperative_pokes_defer();
+	_dispatch_async_and_wait_recurse(dq, &dsc, tid, dc_flags);
+	_dispatch_cooperative_pokes_undefer();
 }
 
 DISPATCH_NOINLINE
@@ -2318,19 +2346,17 @@ dispatch_queue_set_specific(dispatch_queue_t dq, const void *key,
 		return;
 	}
 
-	// The replaced value's destructor submission must happen after the lock
-	// is dropped: pushing to a root queue can run work immediately on
-	// cooperative single-threaded targets (WASI), and client code must never
-	// run under dqsh_lock. Destructor submissions carry no ordering
-	// guarantee, so deferring the push is unobservable elsewhere.
-	dispatch_function_t old_destructor = NULL;
-	void *old_ctxt = NULL;
-
+	// On cooperative single-threaded targets the destructor push below could
+	// otherwise run the client destructor on this stack while dqsh_lock is
+	// held; defer pokes across the critical section so it runs after unlock.
+	_dispatch_cooperative_pokes_defer();
 	_dispatch_unfair_lock_lock(&dqsh->dqsh_lock);
 	dqs = _dispatch_queue_specific_find(dqsh, key);
 	if (dqs) {
-		old_ctxt = dqs->dqs_ctxt;
-		old_destructor = dqs->dqs_destructor;
+		if (dqs->dqs_destructor) {
+			_dispatch_barrier_async_detached_f(rq, dqs->dqs_ctxt,
+					dqs->dqs_destructor);
+		}
 		if (ctxt) {
 			dqs->dqs_ctxt = ctxt;
 			dqs->dqs_destructor = destructor;
@@ -2347,10 +2373,7 @@ dispatch_queue_set_specific(dispatch_queue_t dq, const void *key,
 	}
 
 	_dispatch_unfair_lock_unlock(&dqsh->dqsh_lock);
-
-	if (old_destructor) {
-		_dispatch_barrier_async_detached_f(rq, old_ctxt, old_destructor);
-	}
+	_dispatch_cooperative_pokes_undefer();
 }
 
 DISPATCH_ALWAYS_INLINE
@@ -6978,6 +7001,13 @@ _dispatch_main_queue_update_priority_from_thread(void)
 	}
 }
 
+#endif // DISPATCH_COCOA_COMPAT
+#if DISPATCH_COCOA_COMPAT || defined(__wasi__)
+// Shared between the CFRunLoop callback path (DISPATCH_COCOA_COMPAT) and the
+// cooperative WASI drain, which owns the thread-bound main queue's drain lock
+// for the lifetime of the program. The runloop-handle initialization and the
+// thread-QoS override propagation are runloop/Darwin machinery and compile
+// only for COCOA_COMPAT.
 static void
 _dispatch_main_queue_drain(dispatch_queue_main_t dq)
 {
@@ -6999,8 +7029,10 @@ _dispatch_main_queue_drain(dispatch_queue_main_t dq)
 				" from the wrong thread");
 	}
 
+#if DISPATCH_COCOA_COMPAT
 	dispatch_once_f(&_dispatch_main_q_handle_pred, dq,
 			_dispatch_runloop_queue_handle_init);
+#endif
 
 	// <rdar://problem/23256682> hide the frame chaining when CFRunLoop
 	// drains the main runloop, as this should not be observable that way
@@ -7009,12 +7041,14 @@ _dispatch_main_queue_drain(dispatch_queue_main_t dq)
 
 	pthread_priority_t pp = _dispatch_get_priority();
 	dispatch_priority_t pri = _dispatch_priority_from_pp(pp);
-	dispatch_qos_t qos = _dispatch_priority_qos(pri);
 	voucher_t voucher = _voucher_copy();
 
+#if DISPATCH_COCOA_COMPAT
+	dispatch_qos_t qos = _dispatch_priority_qos(pri);
 	if (unlikely(qos != _dispatch_priority_qos(dq->dq_priority))) {
 		_dispatch_main_queue_update_priority_from_thread();
 	}
+#endif
 	dispatch_priority_t old_dbp = _dispatch_set_basepri(pri);
 	_dispatch_set_basepri_override_qos(DISPATCH_QOS_SATURATED);
 
@@ -7037,6 +7071,8 @@ _dispatch_main_queue_drain(dispatch_queue_main_t dq)
 	_dispatch_force_cache_cleanup();
 	_dispatch_perfmon_end_notrace();
 }
+#endif // DISPATCH_COCOA_COMPAT || defined(__wasi__)
+#if DISPATCH_COCOA_COMPAT
 
 static bool
 _dispatch_runloop_queue_drain_one(dispatch_lane_t dq)
@@ -7210,63 +7246,11 @@ _dispatch_main_queue_push(dispatch_queue_main_t dq, dispatch_object_t dou,
 void
 _dispatch_wasi_main_queue_drain(void)
 {
-	// Keep in sync with the DISPATCH_COCOA_COMPAT _dispatch_main_queue_drain()
-	// above. It deliberately diverges in exactly two places:
-	// 1. no _dispatch_main_q_handle_pred/_dispatch_runloop_queue_handle_init
-	//    once: WASI has no runloop handle (no eventfd/pipe) and the sole
-	//    thread owns the thread-bound main queue's drain lock for the
-	//    lifetime of the program, so no runloop needs waking;
-	// 2. no `qos != _dispatch_priority_qos(dq->dq_priority)` check with
-	//    _dispatch_main_queue_update_priority_from_thread: without
-	//    HAVE_PTHREAD_WORKQUEUE_QOS both sides are always 0 and the
-	//    override machinery it calls is Darwin-only.
-	dispatch_queue_main_t dq = &_dispatch_main_q;
-	dispatch_thread_frame_s dtf;
-
-	if (!dq->dq_items_tail) {
-		return;
-	}
-
-	_dispatch_perfmon_start_notrace();
-	if (unlikely(!_dispatch_queue_is_thread_bound(dq))) {
-		DISPATCH_CLIENT_CRASH(0, "_dispatch_wasi_main_queue_drain called"
-				" after dispatch_main()");
-	}
-	uint64_t dq_state = os_atomic_load2o(dq, dq_state, relaxed);
-	if (unlikely(!_dq_state_drain_locked_by_self(dq_state))) {
-		DISPATCH_CLIENT_CRASH((uintptr_t)dq_state,
-				"_dispatch_wasi_main_queue_drain called"
-				" from the wrong thread");
-	}
-
-	_dispatch_adopt_wlh_anon();
-	_dispatch_thread_frame_push_and_rebase(&dtf, dq, NULL);
-
-	pthread_priority_t pp = _dispatch_get_priority();
-	dispatch_priority_t pri = _dispatch_priority_from_pp(pp);
-	voucher_t voucher = _voucher_copy();
-
-	dispatch_priority_t old_dbp = _dispatch_set_basepri(pri);
-	_dispatch_set_basepri_override_qos(DISPATCH_QOS_SATURATED);
-
-	dispatch_invoke_context_s dic = { };
-	struct dispatch_object_s *dc, *next_dc, *tail;
-	dc = os_mpsc_capture_snapshot(os_mpsc(dq, dq_items), &tail);
-	do {
-		next_dc = os_mpsc_pop_snapshot_head(dc, tail, do_next);
-		_dispatch_continuation_pop_inline(dc, &dic,
-				DISPATCH_INVOKE_THREAD_BOUND, dq);
-	} while ((dc = next_dc));
-
-	dx_wakeup(dq->_as_dq, 0, 0);
-	_dispatch_voucher_debug("main queue restore", voucher);
-	_dispatch_reset_basepri(old_dbp);
-	_dispatch_reset_basepri_override();
-	_dispatch_reset_priority_and_voucher(pp, voucher);
-	_dispatch_thread_frame_pop(&dtf);
-	_dispatch_reset_wlh();
-	_dispatch_force_cache_cleanup();
-	_dispatch_perfmon_end_notrace();
+	// the shared _dispatch_main_queue_drain above: the runloop-handle and
+	// thread-QoS-override steps it gates under DISPATCH_COCOA_COMPAT do not
+	// exist here (no runloop handle; without HAVE_PTHREAD_WORKQUEUE_QOS both
+	// sides of the QoS check are always 0)
+	_dispatch_main_queue_drain(&_dispatch_main_q);
 }
 #endif // defined(__wasi__)
 
