@@ -101,7 +101,15 @@ instead of crashing. Guardrails:
 - A capability probe at registration crashes with a named diagnostic on hosts
   whose `poll_oneoff` lacks fd subscriptions (browser WASI shims), instead of
   hanging later. An fd that is not open crashes at registration; an fd closed
-  while armed crashes at the next wait.
+  while armed crashes at the next wait with
+  `file descriptor closed while dispatch source is armed`, whether the host
+  reports the closed descriptor per subscription (wasi-libc maps that to
+  `POLLNVAL`) or by failing the whole poll with `EBADF` (wasmtime's shape;
+  `fd-closed-while-armed` pins it via the runner's `--fd-poll-ebadf-after`).
+  Caveat: under Node this diagnostic is only reachable for non-stdio fds -
+  the guest closing an armed stdio descriptor aborts the host process inside
+  libuv (`uv__close` asserts on `fd <= STDERR_FILENO`) before libdispatch
+  sees anything.
 - Indefinite waits use a bounded (1 hour) poll slice in a loop rather than an
   infinite timeout, which WasmKit's host mishandles.
 - When no fd source is armed, idle waits remain a single `poll_oneoff` clock

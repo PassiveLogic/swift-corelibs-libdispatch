@@ -133,9 +133,20 @@ add_test(NAME dispatch_wasi_fd_poll_denied
   COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
     --deny-fd-poll crash "$<TARGET_FILE:dispatch_wasi_read_source>"
     "does not support file-descriptor readiness")
+# close-while-armed: hosts fail the whole harvest poll with EBADF when an
+# armed source's fd is no longer open (wasmtime's shape, emulated by
+# failing every fd poll after the registration probe); the crash must name
+# the armed-source cause, not a generic poll failure
+add_test(NAME dispatch_wasi_fd_closed_while_armed
+  COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
+    --stdin-after "250:never-read" --fd-poll-ebadf-after 1 crash
+    "$<TARGET_FILE:dispatch_wasi_read_source>"
+    "file descriptor closed while dispatch source is armed"
+    "read source armed")
 set_tests_properties(dispatch_wasi_read_source dispatch_wasi_fd_wakeup_wait
   dispatch_wasi_io_stream dispatch_wasi_pipe_eof_hangup
   dispatch_wasi_pipe_eof_spin_crash dispatch_wasi_fd_poll_denied
+  dispatch_wasi_fd_closed_while_armed
   PROPERTIES TIMEOUT 10)
 # runner robustness: the guest exits long before the delayed stdin write
 # lands; the runner must still report the guest's own result rather than
@@ -235,6 +246,7 @@ if(NOT DISPATCH_WASI_NODE_OK)
     dispatch_wasi_pipe_eof_hangup
     dispatch_wasi_pipe_eof_spin_crash
     dispatch_wasi_fd_poll_denied
+    dispatch_wasi_fd_closed_while_armed
     dispatch_wasi_runner_early_exit
     dispatch_wasi_clean_c_consumer
     dispatch_wasi_runner_wrong_mode
