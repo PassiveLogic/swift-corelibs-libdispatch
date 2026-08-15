@@ -163,7 +163,8 @@ static void
 _dispatch_wasi_signal_handler(int signo)
 {
 	// invoked synchronously from the caller's raise(); merged by
-	// _dispatch_wasi_poll_harvest at the next drain or wait point
+	// _dispatch_wasi_poll_harvest at the next blocking wait or
+	// dispatch_main() park (eager drains do not harvest)
 	if (signo > 0 && signo < NSIG) {
 		_dispatch_wasi_signal_pending[signo]++;
 		_dispatch_wasi_signal_pending_any = true;

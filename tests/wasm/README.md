@@ -41,8 +41,12 @@ Single-threaded WASI drains queues and timers cooperatively. `dispatch_main()`
 drains useful main-queue work, then parks in the host on armed timers and
 event sources; it traps with
 `dispatch_main(): no runnable work on single-threaded WASI` only when the
-process is fully idle with no timer and no event source armed. It cannot block
-forever because nothing else could ever make progress.
+process is fully idle with no timer and no pollable event source armed. It
+cannot block forever because nothing else could ever make progress. An armed
+signal source alone does not keep the park alive: signals are in-process
+`raise()` only, so a parked sole thread with nothing else runnable could
+never be signaled - a signal-source-only `dispatch_main()` traps as truly
+idle, deliberately.
 
 **Eager submission is specified behavior, not an accident.** At top level
 (outside any drain), a block submitted with `dispatch_async` runs to
@@ -58,7 +62,16 @@ inside a running work item defer to the outer drain - there are no nested
 drains - and the outer drain resumes in category priority order: due timers,
 the manager queue, the main queue, then root queues by QoS. All of this is
 pinned by `eager-drain.c`; a change in these orderings is a behavior change,
-not an implementation detail.
+not an implementation detail. Two boundary contracts to keep in mind: inside
+a caller-held critical section (an inline `dispatch_sync` body, a
+`dispatch_once` initializer, dispose, `dispatch_queue_set_specific`) pokes
+only record work and the flush is deferred to the section's exit, but a
+*blocking wait* issued inside such a section still pumps queued work under
+the caller's lock (see `WAIT-PUMPING-AUDIT.md`); and fd/signal sources
+deliver only at blocking waits or inside `dispatch_main()` - eager drains
+fire due timers but never harvest fd readiness or pending signals, so an
+embedding that neither blocks nor calls `dispatch_main()` will not observe
+source events.
 
 **Wall-clock timers are anchored at arm time - a documented WASI limitation.**
 A wall-deadline timer is converted to the uptime clock when it is armed, so a
@@ -119,9 +132,9 @@ instead of crashing. Guardrails:
 **Signal dispatch sources are supported for in-process `raise()`**, riding
 wasi-libc's `_WASI_EMULATED_SIGNAL` (the build defines and links it): a
 `raise()` anywhere in the guest invokes the emulated handler synchronously,
-and the armed source's handler fires on the next drain with the accumulated
-count. This works on every runtime, including browser shims, because no host
-poll support is involved. There is no asynchronous or cross-process signal
+and the armed source's handler fires at the next blocking wait or
+`dispatch_main()` park with the accumulated count. This works on every
+runtime, including browser shims, because no host poll support is involved. There is no asynchronous or cross-process signal
 delivery on any current or announced WASI version, and none is possible here.
 
 Runtime support for fd readiness (empirically verified): wasmtime, Node's
@@ -158,11 +171,11 @@ order, fairness across self-replenishing roots, uptime and wall timers, signal
 and file-descriptor source failures, and both useful and immediately idle
 `dispatch_main()` paths.
 
-Additional focused tests pin behaviors that differentiated the two original
-WASI port candidates (PRs #1 and #2):
+Additional focused tests pin behaviors that differentiated earlier
+iterations of the WASI port:
 
 - `sync-inline.c`, `main-queue-order.c` - inline `dispatch_sync` without a
-  drain, and thread-bound main-queue FIFO order (adapted from PR #1's tests).
+  drain, and thread-bound main-queue FIFO order.
 - `blocking-waits.c` - blocking-wait contracts: `dispatch_block_wait` runs the
   queued block, `dispatch_group_wait(FOREVER)` returns once the group empties,
   and a timed semaphore wait consumes its full timeout instead of returning
