@@ -6,7 +6,12 @@ import { fileURLToPath } from 'node:url';
 const runner = fileURLToPath(import.meta.url);
 
 async function runGuest(binary, guestOpts) {
-  const wasi = new WASI({ version: 'preview1', args: [binary], env: {} });
+  const wasi = new WASI({
+    version: 'preview1',
+    args: [binary],
+    env: {},
+    preopens: guestOpts.preopens,
+  });
   const importObject = wasi.getImportObject();
   let memory = null;
   if (guestOpts.denyFdPoll) {
@@ -111,13 +116,21 @@ async function runChecked(...argv) {
       }
       guestFlags.push(argv[0], argv[1]);
       argv = argv.slice(2);
+    } else if (argv[0] === '--preopen') {
+      const spec = argv[1] ?? '';
+      if (spec.indexOf(':') < 1) {
+        console.error('bad --preopen spec, want <guest dir>:<host dir>');
+        return 2;
+      }
+      guestFlags.push(argv[0], argv[1]);
+      argv = argv.slice(2);
     } else {
       break;
     }
   }
   const [mode, binary, ...expected] = argv;
   if (!['success', 'crash'].includes(mode) || !binary || expected.length === 0) {
-    console.error('usage: run-wasi-test.mjs [--stdin-after <ms>:<text>] [--deny-fd-poll] [--suppress-poll-hangup] [--fd-poll-ebadf-after <n>] <success|crash> <binary> <expected text>...');
+    console.error('usage: run-wasi-test.mjs [--stdin-after <ms>:<text>] [--deny-fd-poll] [--suppress-poll-hangup] [--fd-poll-ebadf-after <n>] [--preopen <guest>:<host>] <success|crash> <binary> <expected text>...');
     return 2;
   }
 
@@ -174,6 +187,7 @@ if (process.argv[2] === '--guest') {
     denyFdPoll: false,
     suppressPollHangup: false,
     fdPollEbadfAfter: null,
+    preopens: {},
   };
   let i = 3;
   for (;; i++) {
@@ -183,6 +197,11 @@ if (process.argv[2] === '--guest') {
       guestOpts.suppressPollHangup = true;
     } else if (process.argv[i] === '--fd-poll-ebadf-after') {
       guestOpts.fdPollEbadfAfter = Number(process.argv[i + 1]);
+      i++;
+    } else if (process.argv[i] === '--preopen') {
+      const spec = process.argv[i + 1];
+      const colon = spec.indexOf(':');
+      guestOpts.preopens[spec.slice(0, colon)] = spec.slice(colon + 1);
       i++;
     } else {
       break;

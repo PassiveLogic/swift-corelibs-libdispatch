@@ -88,10 +88,12 @@ add_wasi_test(dispatch_wasi_async_and_wait async-and-wait.c success
 # guest must park in the host poll and wake on fd readiness to pass.
 add_executable(dispatch_wasi_read_source read-source.c)
 add_executable(dispatch_wasi_fd_wakeup_wait fd-wakeup-wait.c)
+add_executable(dispatch_wasi_group_fd_wakeup group-fd-wakeup.c)
 add_executable(dispatch_wasi_io_stream dispatch-io-stream.c)
 add_executable(dispatch_wasi_pipe_eof pipe-eof-source.c)
 foreach(_stdin_test dispatch_wasi_read_source dispatch_wasi_fd_wakeup_wait
-    dispatch_wasi_io_stream dispatch_wasi_pipe_eof)
+    dispatch_wasi_group_fd_wakeup dispatch_wasi_io_stream
+    dispatch_wasi_pipe_eof)
   target_compile_options(${_stdin_test} PRIVATE -fblocks -Wall)
   target_link_libraries(${_stdin_test} PRIVATE dispatch)
   target_link_options(${_stdin_test} PRIVATE
@@ -107,10 +109,30 @@ add_test(NAME dispatch_wasi_fd_wakeup_wait
   COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
     --stdin-after "250:ping" success "$<TARGET_FILE:dispatch_wasi_fd_wakeup_wait>"
     "fd wakeup OK" "waiting on semaphore")
+add_test(NAME dispatch_wasi_group_fd_wakeup
+  COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
+    --stdin-after "250:ping" success "$<TARGET_FILE:dispatch_wasi_group_fd_wakeup>"
+    "group fd wakeup OK" "waiting on group")
 add_test(NAME dispatch_wasi_io_stream
   COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
     --stdin-after "250:ping" success "$<TARGET_FILE:dispatch_wasi_io_stream>"
     "dispatch io stream OK")
+# regular-file dispatch_read/dispatch_write/DispatchIO with payload
+# assertions; the runner maps a scratch directory into the guest
+add_executable(dispatch_wasi_regfile_io regfile-io.c)
+target_compile_options(dispatch_wasi_regfile_io PRIVATE -fblocks -Wall)
+target_link_libraries(dispatch_wasi_regfile_io PRIVATE dispatch)
+target_link_options(dispatch_wasi_regfile_io PRIVATE
+  -nodefaultlibs
+  -lc
+  "${DISPATCH_WASI_BUILTINS}")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/regfile-io-scratch")
+add_test(NAME dispatch_wasi_regfile_io
+  COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
+    --preopen "/scratch:${CMAKE_CURRENT_BINARY_DIR}/regfile-io-scratch"
+    success "$<TARGET_FILE:dispatch_wasi_regfile_io>"
+    "dispatch_write done" "dispatch_read payload OK" "io random range OK"
+    "regular file io OK")
 # pipe EOF with a source that never cancels: on hangup-reporting hosts the
 # harvest drops the source and dispatch_main() traps idle; on hosts without
 # the hangup flag (emulated with --suppress-poll-hangup) the permanently
@@ -144,7 +166,8 @@ add_test(NAME dispatch_wasi_fd_closed_while_armed
     "file descriptor closed while dispatch source is armed"
     "read source armed")
 set_tests_properties(dispatch_wasi_read_source dispatch_wasi_fd_wakeup_wait
-  dispatch_wasi_io_stream dispatch_wasi_pipe_eof_hangup
+  dispatch_wasi_group_fd_wakeup dispatch_wasi_io_stream
+  dispatch_wasi_regfile_io dispatch_wasi_pipe_eof_hangup
   dispatch_wasi_pipe_eof_spin_crash dispatch_wasi_fd_poll_denied
   dispatch_wasi_fd_closed_while_armed
   PROPERTIES TIMEOUT 10)
@@ -242,7 +265,9 @@ if(NOT DISPATCH_WASI_NODE_OK)
   set(_wasi_explicit_tests
     dispatch_wasi_read_source
     dispatch_wasi_fd_wakeup_wait
+    dispatch_wasi_group_fd_wakeup
     dispatch_wasi_io_stream
+    dispatch_wasi_regfile_io
     dispatch_wasi_pipe_eof_hangup
     dispatch_wasi_pipe_eof_spin_crash
     dispatch_wasi_fd_poll_denied
