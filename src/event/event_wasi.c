@@ -528,6 +528,31 @@ _dispatch_wasi_pollset_reserve(size_t cnt)
 	_dispatch_wasi_pfd_capacity = cap;
 }
 
+// EOF starvation guard. Some hosts never set poll_oneoff's
+// FD_READWRITE_HANGUP flag (wasmtime 47 for pipes, empirically), and
+// preview1 offers no other EOF signal (nbytes is reported as a constant 1,
+// fd_filestat_get gives no pipe fill), so to the guest a pipe whose peer
+// closed is indistinguishable from a readable one: the handler keeps firing.
+// That matches Darwin, where descriptors stay readable at EOF and the client
+// is expected to read 0 and cancel - but if the client never cancels, the
+// sole WASI thread's park loop itself becomes the spin (~500k handler
+// fires/sec, measured), silently. Hosts that do report hangup never get
+// here: the POLLHUP path below delivers EOF and stops watching the
+// descriptor (the epoll backend's EPOLLHUP discipline). For the hosts that
+// cannot report it, the port's no-silent-spin policy turns the hot loop
+// into a named crash: a park whose poll() reports readiness 100000 times
+// within two seconds is spinning, not sleeping - that rate means the polls
+// return instantly (under 20us each on average), which a demand-driven
+// stream cannot sustain because the reader draining the descriptor makes
+// the poll block again. (A per-poll elapsed-time cutoff would be the more
+// obvious detector, but host scheduling jitter - Node's event loop pauses
+// every few hundred polls - resets it indefinitely; the windowed rate is
+// immune to jitter.)
+#define DISPATCH_WASI_READY_POLL_SPIN_LIMIT 100000
+#define DISPATCH_WASI_READY_POLL_SPIN_WINDOW_NS (2 * NSEC_PER_SEC)
+static uint32_t _dispatch_wasi_ready_poll_count;
+static uint64_t _dispatch_wasi_ready_poll_window_start;
+
 static bool
 _dispatch_wasi_poll_harvest_locked(int timeout_ms)
 {
@@ -559,11 +584,37 @@ _dispatch_wasi_poll_harvest_locked(int timeout_ms)
 	struct pollfd *pfds = _dispatch_wasi_pfds;
 	dispatch_muxnote_t *pfd_dmn = _dispatch_wasi_pfd_dmn;
 
-	int rc = poll(pfds, cnt, merged ? 0 : timeout_ms);
+	int effective_timeout_ms = merged ? 0 : timeout_ms;
+	int rc = poll(pfds, cnt, effective_timeout_ms);
 	if (rc < 0) {
 		if (errno == EINTR) return merged;
 		DISPATCH_CLIENT_CRASH(errno, "poll() failed for armed dispatch "
 				"source file descriptors");
+	}
+	if (effective_timeout_ms && rc > 0) {
+		if (_dispatch_wasi_ready_poll_count++ == 0) {
+			_dispatch_wasi_ready_poll_window_start = _dispatch_uptime();
+		}
+		if (unlikely(_dispatch_wasi_ready_poll_count >=
+				DISPATCH_WASI_READY_POLL_SPIN_LIMIT)) {
+			if (_dispatch_uptime() - _dispatch_wasi_ready_poll_window_start <=
+					DISPATCH_WASI_READY_POLL_SPIN_WINDOW_NS) {
+				int stuck_fd = pfds[0].fd;
+				for (nfds_t i = 0; i < cnt; i++) {
+					if (pfds[i].revents) {
+						stuck_fd = pfds[i].fd;
+						break;
+					}
+				}
+				DISPATCH_CLIENT_CRASH(stuck_fd, "file descriptor for an "
+						"armed dispatch source is permanently ready with "
+						"the sole thread parked (EOF without "
+						"dispatch_source_cancel, or an always-ready "
+						"descriptor); cancel fd sources once read() "
+						"returns 0");
+			}
+			_dispatch_wasi_ready_poll_count = 0;
+		}
 	}
 	for (nfds_t i = 0; rc > 0 && i < cnt; i++) {
 		uint16_t revents = (uint16_t)pfds[i].revents;
