@@ -588,6 +588,13 @@ _dispatch_wasi_poll_harvest_locked(int timeout_ms)
 	int rc = poll(pfds, cnt, effective_timeout_ms);
 	if (rc < 0) {
 		if (errno == EINTR) return merged;
+		if (errno == EBADF) {
+			// every descriptor in this set belongs to an armed source, so a
+			// whole-call BADF - how wasmtime reports a subscription on a
+			// closed fd - can only mean one of them was closed while armed
+			DISPATCH_CLIENT_CRASH(errno, "file descriptor closed while "
+					"dispatch source is armed");
+		}
 		DISPATCH_CLIENT_CRASH(errno, "poll() failed for armed dispatch "
 				"source file descriptors");
 	}
@@ -620,6 +627,10 @@ _dispatch_wasi_poll_harvest_locked(int timeout_ms)
 		uint16_t revents = (uint16_t)pfds[i].revents;
 		if (!revents) continue;
 		if (revents & POLLNVAL) {
+			// the per-subscription shape of the same condition: wasi-libc's
+			// ppoll maps a subscription-level BADF error to POLLNVAL (hosts
+			// like wasmtime instead fail the whole call, the EBADF branch
+			// above)
 			DISPATCH_CLIENT_CRASH(pfds[i].fd, "file descriptor closed "
 					"while dispatch source is armed");
 		}

@@ -26,6 +26,27 @@ async function runGuest(binary, guestOpts) {
       return realPoll(inPtr, outPtr, nsubscriptions, neventsPtr);
     };
   }
+  if (guestOpts.fdPollEbadfAfter !== null) {
+    // Emulate wasmtime's close-while-armed shape: when an fd in the poll
+    // set is no longer open, the whole poll_oneoff call fails with BADF
+    // (rather than reporting a per-subscription error). Let the first n
+    // fd-carrying polls through (the registration capability probe), then
+    // fail every later one.
+    const preview1 = importObject.wasi_snapshot_preview1;
+    const realPoll = preview1.poll_oneoff;
+    let fdPolls = 0;
+    preview1.poll_oneoff = (inPtr, outPtr, nsubscriptions, neventsPtr) => {
+      const view = new DataView(memory.buffer);
+      let hasFd = false;
+      for (let i = 0; i < nsubscriptions; i++) {
+        if (view.getUint8(inPtr + i * 48 + 8) !== 0) hasFd = true;
+      }
+      if (hasFd && ++fdPolls > guestOpts.fdPollEbadfAfter) {
+        return 8; // __WASI_ERRNO_BADF
+      }
+      return realPoll(inPtr, outPtr, nsubscriptions, neventsPtr);
+    };
+  }
   if (guestOpts.suppressPollHangup) {
     // Emulate a host that never reports FD_READWRITE_HANGUP (wasmtime 47
     // for pipes, empirically): EOF then shows up only as permanent
@@ -82,13 +103,21 @@ async function runChecked(...argv) {
         argv[0] === '--suppress-poll-hangup') {
       guestFlags.push(argv[0]);
       argv = argv.slice(1);
+    } else if (argv[0] === '--fd-poll-ebadf-after') {
+      const n = Number(argv[1]);
+      if (!Number.isInteger(n) || n < 0) {
+        console.error('bad --fd-poll-ebadf-after count, want an integer');
+        return 2;
+      }
+      guestFlags.push(argv[0], argv[1]);
+      argv = argv.slice(2);
     } else {
       break;
     }
   }
   const [mode, binary, ...expected] = argv;
   if (!['success', 'crash'].includes(mode) || !binary || expected.length === 0) {
-    console.error('usage: run-wasi-test.mjs [--stdin-after <ms>:<text>] [--deny-fd-poll] [--suppress-poll-hangup] <success|crash> <binary> <expected text>...');
+    console.error('usage: run-wasi-test.mjs [--stdin-after <ms>:<text>] [--deny-fd-poll] [--suppress-poll-hangup] [--fd-poll-ebadf-after <n>] <success|crash> <binary> <expected text>...');
     return 2;
   }
 
@@ -141,13 +170,20 @@ async function runChecked(...argv) {
 }
 
 if (process.argv[2] === '--guest') {
-  const guestOpts = { denyFdPoll: false, suppressPollHangup: false };
+  const guestOpts = {
+    denyFdPoll: false,
+    suppressPollHangup: false,
+    fdPollEbadfAfter: null,
+  };
   let i = 3;
   for (;; i++) {
     if (process.argv[i] === '--deny-fd-poll') {
       guestOpts.denyFdPoll = true;
     } else if (process.argv[i] === '--suppress-poll-hangup') {
       guestOpts.suppressPollHangup = true;
+    } else if (process.argv[i] === '--fd-poll-ebadf-after') {
+      guestOpts.fdPollEbadfAfter = Number(process.argv[i + 1]);
+      i++;
     } else {
       break;
     }
