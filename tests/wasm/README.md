@@ -185,10 +185,16 @@ Event-source tests:
 - `write-source.c` - a write source on stdout fires through poll readiness,
   rearms level-triggered after each `EV_DISPATCH` delivery, and parks
   `dispatch_main()` instead of trapping.
-- `read-source.c`, `fd-wakeup-wait.c` - the runner pipes stdin only after a
-  delay (`--stdin-after`), so passing proves the guest genuinely parks in the
-  host poll: once under `dispatch_main()`, once inside a blocking
-  `dispatch_semaphore_wait(FOREVER)` satisfied by the read source's handler.
+- `read-source.c`, `fd-wakeup-wait.c`, `group-fd-wakeup.c` - the runner
+  pipes stdin only after a delay (`--stdin-after`), so passing proves the
+  guest genuinely parks in the host poll: once under `dispatch_main()`, once
+  inside a blocking `dispatch_semaphore_wait(FOREVER)`, and once inside a
+  blocking `dispatch_group_wait(FOREVER)`, the latter two satisfied by the
+  read source's handler.
+- `regfile-io.c` - `dispatch_read`/`dispatch_write`/`DispatchIO` on a
+  regular file in a preopened directory (the runner's `--preopen`), with the
+  payload content-asserted through the always-ready path: whole-file
+  write/read-back plus a `DISPATCH_IO_RANDOM` byte-range read.
 - `pipe-eof-source.c` - pipe EOF against a source that never cancels: on
   hangup-reporting hosts the source is dropped and `dispatch_main()` traps
   idle; with the hangup flag suppressed (`--suppress-poll-hangup`, the
