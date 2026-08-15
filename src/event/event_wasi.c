@@ -346,7 +346,12 @@ _dispatch_unote_unregister_muxed(dispatch_unote_t du)
 		if (dmn->dmn_filter == EVFILT_SIGNAL) {
 			// restore the application's disposition, drop this signal's
 			// undelivered count, and keep the aggregate latch truthful
-			signal((int)dmn->dmn_ident, dmn->dmn_prev_sig_handler);
+			if (signal((int)dmn->dmn_ident, dmn->dmn_prev_sig_handler) ==
+					SIG_ERR) {
+				DISPATCH_INTERNAL_CRASH(dmn->dmn_ident, "signal() failed "
+						"restoring the disposition of an unregistered "
+						"dispatch signal source");
+			}
 			_dispatch_wasi_signal_pending[dmn->dmn_ident] = 0;
 			bool any = false;
 			for (int s = 1; s < NSIG; s++) {
