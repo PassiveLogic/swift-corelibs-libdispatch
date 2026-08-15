@@ -61,9 +61,11 @@ held* - harmless on threaded platforms (the push just wakes a worker), but
 under this port's eager drain the push can run the client destructor
 immediately, on the same stack, under the lock; a destructor touching the
 same queue's specifics would then hit the recursive-lock crash. Fixed by
-capturing the old value under the lock and deferring the push until after
-unlock (destructor submissions carry no ordering guarantee, so the change is
-unobservable on threaded platforms); `specific-destructor.c` pins it. The
+wrapping the critical section in the poke-defer bracket: the destructor
+push still happens under `dqsh_lock`, but the eager drain it would trigger
+is deferred until the bracket exits after unlock (destructor submissions
+carry no ordering guarantee, so the change is unobservable on threaded
+platforms); `specific-destructor.c` pins it. The
 queue-dealloc specifics dispose path was checked too - it runs lock-free.
 Every other audited critical section only mutates structure and returns; if
 a corrupted state ever produces same-stack lock contention anyway, the new
@@ -75,7 +77,12 @@ Every path that can block on single-threaded WASI now terminates in exactly
 one of three ways: **satisfied** (by pumped work, a timer, fd readiness, or a
 pending emulated signal), **timed out** (after genuinely consuming its
 deadline), or a **named crash** for provable deadlocks. No wait can hang and
-no wait can spin. The re-entrancy exposure of pumping is confined to
+no wait can spin. That includes the level-triggered edge case: a descriptor
+that becomes permanently ready under a park (pipe EOF on a host that never
+reports the poll hangup flag, against a source the client never cancels)
+crashes with a named diagnostic via the harvest's ready-poll rate guard in
+`event_wasi.c` instead of turning the wait loop into a silent hot spin;
+`pipe-eof-source.c` pins it. The re-entrancy exposure of pumping is confined to
 top-level blocking calls, whose callers already accept work happening
 "elsewhere" during the wait on threaded platforms - the WASI difference,
 documented in `README.md`, is that "elsewhere" is the same stack.
