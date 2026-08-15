@@ -81,6 +81,8 @@ add_wasi_test(dispatch_wasi_signal_disposition signal-disposition.c success
   "signal disposition OK" 5)
 add_wasi_test(dispatch_wasi_sync_nested_async sync-nested-async.c success
   "sync nested async OK" 5)
+add_wasi_test(dispatch_wasi_async_and_wait async-and-wait.c success
+  "async and wait OK" 5)
 
 # Readiness-driven tests: the runner pipes stdin only after a delay, so the
 # guest must park in the host poll and wake on fd readiness to pass.
