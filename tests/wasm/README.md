@@ -87,6 +87,17 @@ instead of crashing. Guardrails:
 - Regular files and directories are never polled (POSIX always-ready; Node's
   uvwasi also rejects fd subscriptions for them) - they merge as
   level-triggered always-ready, like the epoll backend's `EPERM` handling.
+- Pipe EOF: as on Darwin, a descriptor at EOF stays readable, the handler
+  fires, and the client is expected to observe the 0-byte `read()` and cancel
+  the source. On hosts whose `poll_oneoff` reports the hangup flag (Node's
+  uvwasi), the harvest additionally delivers EOF and stops watching the
+  descriptor, mirroring the epoll backend's `EPOLLHUP` handling. Hosts that
+  never report hangup (wasmtime, for pipes) cannot distinguish EOF from
+  readiness, so a client that never cancels would turn the park into a
+  silent hot loop; the port instead converts that into a named crash when a
+  park's poll reports readiness 100000 times within two seconds (a rate only
+  an instantly-ready descriptor can sustain). `pipe-eof-source.c` pins both
+  host shapes.
 - A capability probe at registration crashes with a named diagnostic on hosts
   whose `poll_oneoff` lacks fd subscriptions (browser WASI shims), instead of
   hanging later. An fd that is not open crashes at registration; an fd closed
@@ -170,6 +181,11 @@ Event-source tests:
   delay (`--stdin-after`), so passing proves the guest genuinely parks in the
   host poll: once under `dispatch_main()`, once inside a blocking
   `dispatch_semaphore_wait(FOREVER)` satisfied by the read source's handler.
+- `pipe-eof-source.c` - pipe EOF against a source that never cancels: on
+  hangup-reporting hosts the source is dropped and `dispatch_main()` traps
+  idle; with the hangup flag suppressed (`--suppress-poll-hangup`, the
+  wasmtime shape) the permanently ready park crashes with the named
+  spin diagnostic instead of looping silently.
 - `signal-source.c` - two `raise(SIGUSR1)` from a queued item deliver one
   handler invocation with count 2.
 - `unsupported-source.c` - a read source on an fd that is not open crashes at
