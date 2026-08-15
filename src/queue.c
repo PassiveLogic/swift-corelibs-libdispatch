@@ -2207,7 +2207,10 @@ _dispatch_async_and_wait_block_with_privdata(dispatch_queue_t dq,
 		.dsc_waiter  = tid,
 	};
 
-	return _dispatch_async_and_wait_recurse(dq, &dsc, tid, dc_flags);
+	// see _dispatch_async_and_wait_f
+	_dispatch_cooperative_pokes_defer();
+	_dispatch_async_and_wait_recurse(dq, &dsc, tid, dc_flags);
+	_dispatch_cooperative_pokes_undefer();
 }
 
 void
