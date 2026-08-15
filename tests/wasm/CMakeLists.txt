@@ -89,8 +89,9 @@ add_wasi_test(dispatch_wasi_async_and_wait async-and-wait.c success
 add_executable(dispatch_wasi_read_source read-source.c)
 add_executable(dispatch_wasi_fd_wakeup_wait fd-wakeup-wait.c)
 add_executable(dispatch_wasi_io_stream dispatch-io-stream.c)
+add_executable(dispatch_wasi_pipe_eof pipe-eof-source.c)
 foreach(_stdin_test dispatch_wasi_read_source dispatch_wasi_fd_wakeup_wait
-    dispatch_wasi_io_stream)
+    dispatch_wasi_io_stream dispatch_wasi_pipe_eof)
   target_compile_options(${_stdin_test} PRIVATE -fblocks -Wall)
   target_link_libraries(${_stdin_test} PRIVATE dispatch)
   target_link_options(${_stdin_test} PRIVATE
@@ -110,6 +111,21 @@ add_test(NAME dispatch_wasi_io_stream
   COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
     --stdin-after "250:ping" success "$<TARGET_FILE:dispatch_wasi_io_stream>"
     "dispatch io stream OK")
+# pipe EOF with a source that never cancels: on hangup-reporting hosts the
+# harvest drops the source and dispatch_main() traps idle; on hosts without
+# the hangup flag (emulated with --suppress-poll-hangup) the permanently
+# ready park must become a named crash, not a silent hot loop
+add_test(NAME dispatch_wasi_pipe_eof_hangup
+  COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
+    --stdin-after "250:ping" crash "$<TARGET_FILE:dispatch_wasi_pipe_eof>"
+    "dispatch_main(): no runnable work on single-threaded WASI"
+    "pipe EOF observed")
+add_test(NAME dispatch_wasi_pipe_eof_spin_crash
+  COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
+    --stdin-after "250:ping" --suppress-poll-hangup crash
+    "$<TARGET_FILE:dispatch_wasi_pipe_eof>"
+    "permanently ready with the sole thread parked"
+    "pipe EOF observed")
 # capability guardrail: under a host whose poll_oneoff rejects fd
 # subscriptions (the runner emulates one with --deny-fd-poll), fd-source
 # registration must crash with the named diagnostic instead of hanging
@@ -118,7 +134,8 @@ add_test(NAME dispatch_wasi_fd_poll_denied
     --deny-fd-poll crash "$<TARGET_FILE:dispatch_wasi_read_source>"
     "does not support file-descriptor readiness")
 set_tests_properties(dispatch_wasi_read_source dispatch_wasi_fd_wakeup_wait
-  dispatch_wasi_io_stream dispatch_wasi_fd_poll_denied
+  dispatch_wasi_io_stream dispatch_wasi_pipe_eof_hangup
+  dispatch_wasi_pipe_eof_spin_crash dispatch_wasi_fd_poll_denied
   PROPERTIES TIMEOUT 10)
 # runner robustness: the guest exits long before the delayed stdin write
 # lands; the runner must still report the guest's own result rather than
@@ -215,6 +232,8 @@ if(NOT DISPATCH_WASI_NODE_OK)
     dispatch_wasi_read_source
     dispatch_wasi_fd_wakeup_wait
     dispatch_wasi_io_stream
+    dispatch_wasi_pipe_eof_hangup
+    dispatch_wasi_pipe_eof_spin_crash
     dispatch_wasi_fd_poll_denied
     dispatch_wasi_runner_early_exit
     dispatch_wasi_clean_c_consumer
