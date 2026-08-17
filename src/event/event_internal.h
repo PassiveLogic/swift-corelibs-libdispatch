@@ -699,6 +699,26 @@ void _dispatch_event_loop_timer_delete(dispatch_timer_heap_t dth, uint32_t tidx)
 
 void _dispatch_event_loop_drain_timers(dispatch_timer_heap_t dth, uint32_t count);
 
+#if DISPATCH_EVENT_BACKEND_WASI
+// Bracket a caller-held critical section entered outside any drain (an
+// inline-executed sync body, a once initializer, an object dispose, the
+// specifics-hash mutation): pokes inside only record pending work, and the
+// outermost undefer flushes it.
+void _dispatch_wasi_defer_pokes(void);
+void _dispatch_wasi_undefer_pokes(void);
+#endif // DISPATCH_EVENT_BACKEND_WASI
+
+// No-op on threaded platforms: pokes there wake other workers and never run
+// client code on the submitting stack, so critical sections need no bracket.
+// A cooperative single-threaded event backend defines the real versions.
+#if DISPATCH_EVENT_BACKEND_WASI
+#define _dispatch_cooperative_pokes_defer()   _dispatch_wasi_defer_pokes()
+#define _dispatch_cooperative_pokes_undefer() _dispatch_wasi_undefer_pokes()
+#else
+#define _dispatch_cooperative_pokes_defer()   ((void)0)
+#define _dispatch_cooperative_pokes_undefer() ((void)0)
+#endif
+
 DISPATCH_ALWAYS_INLINE
 static inline void
 _dispatch_timers_heap_dirty(dispatch_timer_heap_t dth, uint32_t tidx)
