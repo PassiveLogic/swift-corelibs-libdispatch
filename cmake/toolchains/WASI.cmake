@@ -9,16 +9,22 @@ set(CMAKE_SYSTEM_PROCESSOR wasm32)
 set(SWIFT_WASI_TOOLCHAIN_PATH "${SWIFT_WASI_TOOLCHAIN_PATH}" CACHE PATH
   "Host Swift .xctoolchain used to build for WASI")
 set(SWIFT_WASI_SDK_PATH "${SWIFT_WASI_SDK_PATH}" CACHE PATH
-  "wasm32-unknown-wasip1 directory in a Swift WASI SDK")
+  "wasm32-unknown-wasip1 or wasm32-unknown-wasip1-threads directory in a Swift WASI SDK")
 set(SWIFT_WASI_STATIC_RESOURCES_OVERRIDE "" CACHE PATH
   "Optional override for the Swift static resource directory")
 set(DISPATCH_WASI_BUILTINS_OVERRIDE "" CACHE FILEPATH
   "Optional override for the WASI compiler-rt builtins archive")
+option(DISPATCH_WASI_THREADS
+  "Experimental: target wasm32-unknown-wasip1-threads (wasi-threads hosts only)" OFF)
+set(DISPATCH_WASI_MAX_MEMORY "268435456" CACHE STRING
+  "Shared-memory maximum in bytes for threads builds (wasm memories need a hard cap)")
 list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES
   SWIFT_WASI_TOOLCHAIN_PATH
   SWIFT_WASI_SDK_PATH
   SWIFT_WASI_STATIC_RESOURCES_OVERRIDE
-  DISPATCH_WASI_BUILTINS_OVERRIDE)
+  DISPATCH_WASI_BUILTINS_OVERRIDE
+  DISPATCH_WASI_THREADS
+  DISPATCH_WASI_MAX_MEMORY)
 
 if(NOT SWIFT_WASI_TOOLCHAIN_PATH)
   message(FATAL_ERROR "Set SWIFT_WASI_TOOLCHAIN_PATH to the host Swift .xctoolchain")
@@ -85,25 +91,42 @@ if(ENABLE_SWIFT)
   endif()
 endif()
 
+if(DISPATCH_WASI_THREADS)
+  set(_dispatch_wasi_triple wasm32-unknown-wasip1-threads)
+else()
+  set(_dispatch_wasi_triple wasm32-unknown-wasip1)
+endif()
+
 set(CMAKE_C_COMPILER "${_dispatch_wasi_clang}")
 set(CMAKE_CXX_COMPILER "${_dispatch_wasi_clangxx}")
 set(CMAKE_AR "${_dispatch_wasi_ar}")
 set(CMAKE_RANLIB "${_dispatch_wasi_ranlib}")
-set(CMAKE_C_COMPILER_TARGET wasm32-unknown-wasip1)
-set(CMAKE_CXX_COMPILER_TARGET wasm32-unknown-wasip1)
+set(CMAKE_C_COMPILER_TARGET ${_dispatch_wasi_triple})
+set(CMAKE_CXX_COMPILER_TARGET ${_dispatch_wasi_triple})
 set(CMAKE_SYSROOT "${_dispatch_wasi_sysroot}")
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 set(CMAKE_EXECUTABLE_SUFFIX .wasm)
+
+if(DISPATCH_WASI_THREADS)
+  # -pthread turns on atomics and shared memory. The memory must also be
+  # imported and exported with a hard maximum: wasi-threads hosts spawn
+  # each thread against the same imported shared memory, and a module
+  # that owns a private memory fails at the first pthread_create.
+  string(APPEND CMAKE_C_FLAGS_INIT " -pthread")
+  string(APPEND CMAKE_CXX_FLAGS_INIT " -pthread")
+  string(APPEND CMAKE_EXE_LINKER_FLAGS_INIT
+    " -Wl,--import-memory,--export-memory,--max-memory=${DISPATCH_WASI_MAX_MEMORY}")
+endif()
 
 if(ENABLE_SWIFT)
   if(NOT EXISTS "${_dispatch_wasi_swiftc}")
     message(FATAL_ERROR "Swift compiler does not exist: ${_dispatch_wasi_swiftc}")
   endif()
   set(CMAKE_Swift_COMPILER "${_dispatch_wasi_swiftc}")
-  set(CMAKE_Swift_COMPILER_TARGET wasm32-unknown-wasip1)
+  set(CMAKE_Swift_COMPILER_TARGET ${_dispatch_wasi_triple})
   set(CMAKE_Swift_FLAGS
     "-sdk \"${CMAKE_SYSROOT}\" -resource-dir \"${SWIFT_WASI_STATIC_RESOURCES}\"")
-  set(dispatch_MODULE_TRIPLE wasm32-unknown-wasip1 CACHE STRING "Swift module triple")
+  set(dispatch_MODULE_TRIPLE ${_dispatch_wasi_triple} CACHE STRING "Swift module triple")
   set(dispatch_ARCH wasm32 CACHE STRING "Swift architecture")
   set(dispatch_PLATFORM wasi CACHE STRING "Swift platform")
 endif()
