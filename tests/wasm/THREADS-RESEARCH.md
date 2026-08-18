@@ -141,6 +141,41 @@ signatures survive as designed.
 3. The test runner needs a wasmtime v24 pin (or WAMR) for any threads
    CI lane; current wasmtime cannot run it.
 
+## Implementation results (this branch)
+
+The sketch above is now implemented and proven on this branch:
+
+- `DISPATCH_WASI_COOPERATIVE` (`__wasi__ && !_REENTRANT`) splits every
+  cooperative gate; the threads triple takes the generic POSIX shape.
+- `cmake ... -DDISPATCH_WASI_THREADS=ON` builds `libdispatch.a` clean
+  (-Werror) for `wasm32-unknown-wasip1-threads`. The cooperative build
+  is unchanged: 52 of 52 ctest cases still pass.
+- New backend `event_wasi_threads.c`: the manager thread parks on a
+  CLOCK_MONOTONIC condvar, merges due timers, and wakes on pokes.
+  `_dispatch_wait_on_address` is a real futex via
+  `__builtin_wasm_memory_atomic_wait32/notify`.
+- **Proof**: `tests/wasm/threads-dispatch-smoke.c` under wasmtime v24
+  prints `PASS: async=8/8 on-worker-thread=8/8 sync=1 timer=1`.
+  Every dispatch_async block ran on a worker pthread, semaphores
+  blocked and woke across threads, dispatch_sync funneled, and
+  dispatch_after fired through the manager thread.
+
+Two more toolchain facts found during implementation:
+
+- wasi-libc deliberately does not declare `pthread_exit` (a wasi
+  thread ends only by returning from its start function), so
+  `dispatch_main()` cannot use the generic pthread_exit park. It
+  crashes with a named message until a dedicated design lands (unbind
+  the main queue, park on a semaphore).
+- `DISPATCH_HW_CONFIG_UP` must stay cooperative-only: the threads
+  target is not a uniprocessor, and UP-sized continuations (32 bytes
+  on wasm32) are smaller than `struct dispatch_apply_s`.
+
+Not implemented yet in threads mode: fd/signal event sources (need a
+bounded-slice poll_oneoff poller thread; registering one crashes with
+a named message), `dispatch_main()`, and the Swift overlay (needs a
+matching swiftwasm host toolchain rather than the 6.3.3 release).
+
 ## Reproduction commands
 
     # smoke (4 threads, atomics + semaphore): PASS counter=10 threads=4
