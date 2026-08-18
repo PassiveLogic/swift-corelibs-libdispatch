@@ -14,11 +14,15 @@ set(SWIFT_WASI_STATIC_RESOURCES_OVERRIDE "" CACHE PATH
   "Optional override for the Swift static resource directory")
 set(DISPATCH_WASI_BUILTINS_OVERRIDE "" CACHE FILEPATH
   "Optional override for the WASI compiler-rt builtins archive")
+option(DISPATCH_WASI_EMBEDDED
+  "Build the Swift overlay in Embedded Swift mode (experimental)" OFF)
 list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES
   SWIFT_WASI_TOOLCHAIN_PATH
   SWIFT_WASI_SDK_PATH
   SWIFT_WASI_STATIC_RESOURCES_OVERRIDE
-  DISPATCH_WASI_BUILTINS_OVERRIDE)
+  DISPATCH_WASI_BUILTINS_OVERRIDE
+  DISPATCH_WASI_EMBEDDED
+  CMAKE_Swift_COMPILATION_MODE)
 
 if(NOT SWIFT_WASI_TOOLCHAIN_PATH)
   message(FATAL_ERROR "Set SWIFT_WASI_TOOLCHAIN_PATH to the host Swift .xctoolchain")
@@ -56,6 +60,11 @@ endif()
 
 if(SWIFT_WASI_STATIC_RESOURCES_OVERRIDE)
   set(SWIFT_WASI_STATIC_RESOURCES "${SWIFT_WASI_STATIC_RESOURCES_OVERRIDE}")
+elseif(DISPATCH_WASI_EMBEDDED)
+  # The embedded stdlib modules ship in the non-static resource tree
+  # (usr/lib/swift/embedded), mirroring the SDK's embedded-swift-sdk.json.
+  set(SWIFT_WASI_STATIC_RESOURCES
+    "${SWIFT_WASI_SDK_PATH}/swift.xctoolchain/usr/lib/swift")
 else()
   set(SWIFT_WASI_STATIC_RESOURCES
     "${SWIFT_WASI_SDK_PATH}/swift.xctoolchain/usr/lib/swift_static")
@@ -103,6 +112,14 @@ if(ENABLE_SWIFT)
   set(CMAKE_Swift_COMPILER_TARGET wasm32-unknown-wasip1)
   set(CMAKE_Swift_FLAGS
     "-sdk \"${CMAKE_SYSROOT}\" -resource-dir \"${SWIFT_WASI_STATIC_RESOURCES}\"")
+  if(DISPATCH_WASI_EMBEDDED)
+    string(APPEND CMAKE_Swift_FLAGS
+      " -enable-experimental-feature Embedded")
+    # Embedded Swift requires whole-module builds; the C side gets the
+    # define the SDK's embedded toolset would add.
+    set(CMAKE_Swift_COMPILATION_MODE wholemodule)
+    add_compile_definitions(__EMBEDDED_SWIFT__)
+  endif()
   set(dispatch_MODULE_TRIPLE wasm32-unknown-wasip1 CACHE STRING "Swift module triple")
   set(dispatch_ARCH wasm32 CACHE STRING "Swift architecture")
   set(dispatch_PLATFORM wasi CACHE STRING "Swift platform")
