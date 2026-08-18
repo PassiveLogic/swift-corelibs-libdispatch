@@ -5389,7 +5389,7 @@ _dispatch_queue_mgr_lock(struct dispatch_queue_static_s *dq)
 	});
 }
 
-#if DISPATCH_USE_KEVENT_WORKQUEUE || defined(__wasi__)
+#if DISPATCH_USE_KEVENT_WORKQUEUE || DISPATCH_WASI_COOPERATIVE
 DISPATCH_ALWAYS_INLINE
 static inline bool
 _dispatch_queue_mgr_unlock(struct dispatch_queue_static_s *dq)
@@ -5402,7 +5402,7 @@ _dispatch_queue_mgr_unlock(struct dispatch_queue_static_s *dq)
 	});
 	return _dq_state_is_dirty(old_state);
 }
-#endif // DISPATCH_USE_KEVENT_WORKQUEUE || defined(__wasi__)
+#endif // DISPATCH_USE_KEVENT_WORKQUEUE || DISPATCH_WASI_COOPERATIVE
 
 static void
 _dispatch_mgr_queue_drain(void)
@@ -5432,7 +5432,7 @@ _dispatch_mgr_queue_drain(void)
 	}
 }
 
-#if defined(__wasi__)
+#if DISPATCH_WASI_COOPERATIVE
 DISPATCH_NOINLINE
 void
 _dispatch_wasi_mgr_queue_drain(void)
@@ -5452,7 +5452,7 @@ _dispatch_wasi_mgr_queue_drain(void)
 		_dispatch_event_loop_poke(DISPATCH_WLH_MANAGER, 0, 0);
 	}
 }
-#endif // defined(__wasi__)
+#endif // DISPATCH_WASI_COOPERATIVE
 
 void
 _dispatch_mgr_queue_push(dispatch_lane_t dq, dispatch_object_t dou,
@@ -5736,12 +5736,12 @@ _dispatch_workloop_worker_thread(uint64_t *workloop_id,
 #pragma mark -
 #pragma mark dispatch_root_queue
 
-#if DISPATCH_USE_PTHREAD_POOL && !defined(__wasi__)
+#if DISPATCH_USE_PTHREAD_POOL && !DISPATCH_WASI_COOPERATIVE
 static void *_dispatch_worker_thread(void *context);
 #if defined(_WIN32)
 static unsigned WINAPI _dispatch_worker_thread_thunk(LPVOID lpParameter);
 #endif
-#endif // DISPATCH_USE_PTHREAD_POOL && !defined(__wasi__)
+#endif // DISPATCH_USE_PTHREAD_POOL && !DISPATCH_WASI_COOPERATIVE
 
 #if DISPATCH_DEBUG && DISPATCH_ROOT_QUEUE_DEBUG
 #define _dispatch_root_queue_debug(...) _dispatch_debug(__VA_ARGS__)
@@ -5763,7 +5763,7 @@ DISPATCH_NOINLINE
 static void
 _dispatch_root_queue_poke_slow(dispatch_queue_global_t dq, int n, int floor)
 {
-#if defined(__wasi__)
+#if DISPATCH_WASI_COOPERATIVE
 	// Single-threaded WASI: there is no thread to create. Record a single
 	// pending "worker" in dgq_pending (consumed by the matching decrement in
 	// _dispatch_wasi_root_queue_drain(), mirroring _dispatch_worker_thread2)
@@ -5787,7 +5787,7 @@ _dispatch_root_queue_poke_slow(dispatch_queue_global_t dq, int n, int floor)
 		return;
 	}
 	_dispatch_wasi_root_queue_poke(dq);
-#else // defined(__wasi__)
+#else // DISPATCH_WASI_COOPERATIVE
 	int remaining = n;
 #if !defined(_WIN32)
 	int r = ENOSYS;
@@ -5895,7 +5895,7 @@ _dispatch_root_queue_poke_slow(dispatch_queue_global_t dq, int n, int floor)
 #else
 	(void)floor;
 #endif // DISPATCH_USE_PTHREAD_POOL
-#endif // defined(__wasi__)
+#endif // DISPATCH_WASI_COOPERATIVE
 }
 
 DISPATCH_NOINLINE
@@ -6195,7 +6195,7 @@ _dispatch_root_queue_drain_deferred_item(dispatch_deferred_items_t ddi
 }
 #endif
 
-#if !defined(__wasi__)
+#if !DISPATCH_WASI_COOPERATIVE
 DISPATCH_NOT_TAIL_CALLED // prevent tailcall (for Instrument DTrace probe)
 static void
 _dispatch_root_queue_drain(dispatch_queue_global_t dq,
@@ -6242,9 +6242,9 @@ _dispatch_root_queue_drain(dispatch_queue_global_t dq,
 	_dispatch_clear_basepri();
 	_dispatch_queue_set_current(NULL);
 }
-#endif // !defined(__wasi__)
+#endif // !DISPATCH_WASI_COOPERATIVE
 
-#if defined(__wasi__)
+#if DISPATCH_WASI_COOPERATIVE
 DISPATCH_NOINLINE
 void
 _dispatch_wasi_root_queue_drain(dispatch_queue_global_t dq)
@@ -6281,7 +6281,7 @@ _dispatch_wasi_root_queue_drain(dispatch_queue_global_t dq)
 	_dispatch_clear_basepri();
 	_dispatch_queue_set_current(old_dq);
 }
-#endif // defined(__wasi__)
+#endif // DISPATCH_WASI_COOPERATIVE
 
 #if !DISPATCH_USE_INTERNAL_WORKQUEUE
 static void
@@ -6340,7 +6340,7 @@ _dispatch_root_queue_init_pthread_pool(dispatch_queue_global_t dq,
 	_dispatch_sema4_create(sema, _DSEMA4_POLICY_LIFO);
 }
 
-#if !defined(__wasi__)
+#if !DISPATCH_WASI_COOPERATIVE
 // 6618342 Contact the team that owns the Instrument DTrace probe before
 //         renaming this symbol
 static void *
@@ -6482,7 +6482,7 @@ _dispatch_worker_thread_thunk(LPVOID lpParameter)
 	return 0;
 }
 #endif // defined(_WIN32)
-#endif // !defined(__wasi__)
+#endif // !DISPATCH_WASI_COOPERATIVE
 #endif // DISPATCH_USE_PTHREAD_POOL
 
 DISPATCH_NOINLINE
@@ -7003,7 +7003,7 @@ _dispatch_main_queue_update_priority_from_thread(void)
 }
 
 #endif // DISPATCH_COCOA_COMPAT
-#if DISPATCH_COCOA_COMPAT || defined(__wasi__)
+#if DISPATCH_COCOA_COMPAT || DISPATCH_WASI_COOPERATIVE
 // Shared between the CFRunLoop callback path (DISPATCH_COCOA_COMPAT) and the
 // cooperative WASI drain, which owns the thread-bound main queue's drain lock
 // for the lifetime of the program. The runloop-handle initialization and the
@@ -7019,7 +7019,7 @@ _dispatch_main_queue_drain(dispatch_queue_main_t dq)
 	}
 
 	_dispatch_perfmon_start_notrace();
-#if defined(__wasi__)
+#if DISPATCH_WASI_COOPERATIVE
 #define _DISPATCH_MAIN_QUEUE_DRAIN_CALLER "_dispatch_wasi_main_queue_drain"
 #else
 #define _DISPATCH_MAIN_QUEUE_DRAIN_CALLER "_dispatch_main_queue_callback_4CF"
@@ -7078,7 +7078,7 @@ _dispatch_main_queue_drain(dispatch_queue_main_t dq)
 	_dispatch_force_cache_cleanup();
 	_dispatch_perfmon_end_notrace();
 }
-#endif // DISPATCH_COCOA_COMPAT || defined(__wasi__)
+#endif // DISPATCH_COCOA_COMPAT || DISPATCH_WASI_COOPERATIVE
 #if DISPATCH_COCOA_COMPAT
 
 static bool
@@ -7249,7 +7249,7 @@ _dispatch_main_queue_push(dispatch_queue_main_t dq, dispatch_object_t dou,
 	}
 }
 
-#if defined(__wasi__)
+#if DISPATCH_WASI_COOPERATIVE
 void
 _dispatch_wasi_main_queue_drain(void)
 {
@@ -7259,7 +7259,7 @@ _dispatch_wasi_main_queue_drain(void)
 	// sides of the QoS check are always 0)
 	_dispatch_main_queue_drain(&_dispatch_main_q);
 }
-#endif // defined(__wasi__)
+#endif // DISPATCH_WASI_COOPERATIVE
 
 void
 _dispatch_main_queue_wakeup(dispatch_queue_main_t dq, dispatch_qos_t qos,
@@ -7270,7 +7270,7 @@ _dispatch_main_queue_wakeup(dispatch_queue_main_t dq, dispatch_qos_t qos,
 		return _dispatch_runloop_queue_wakeup(dq->_as_dl, qos, flags);
 	}
 #endif
-#if defined(__wasi__)
+#if DISPATCH_WASI_COOPERATIVE
 	if (_dispatch_queue_is_thread_bound(dq)) {
 		// nothing else can run the thread-bound main queue on
 		// single-threaded WASI: note it for the cooperative drain, after
@@ -7315,7 +7315,7 @@ void
 dispatch_main(void)
 {
 	_dispatch_root_queues_init();
-#if defined(__wasi__)
+#if DISPATCH_WASI_COOPERATIVE
 	// Cooperative single-threaded WASI: there is no way to park the main
 	// thread while other threads do the work, so dispatch_main() itself
 	// becomes the drain loop. Armed timers and event sources (fd readiness,
@@ -7333,12 +7333,19 @@ dispatch_main(void)
 		DISPATCH_CLIENT_CRASH(0,
 				"dispatch_main(): no runnable work on single-threaded WASI");
 	}
-#else // defined(__wasi__)
+#elif defined(__wasi__)
+	// wasi-libc has no pthread_exit: a wasi thread ends only by returning
+	// from its start function, so the main thread cannot park the way the
+	// generic path below does. Support needs a dedicated design (unbind the
+	// main queue, then park on a semaphore); crash clearly until it lands.
+	DISPATCH_CLIENT_CRASH(0,
+			"dispatch_main() is not supported on threaded WASI yet");
+#else // DISPATCH_WASI_COOPERATIVE
 #if HAVE_PTHREAD_MAIN_NP
 	if (pthread_main_np()) {
 #endif
 		_dispatch_object_debug(&_dispatch_main_q, "%s", __func__);
-#ifndef __linux__
+#if !defined(__linux__) && !defined(__wasi__)
 		_dispatch_program_is_probably_callback_driven = true;
 #endif
 		_dispatch_ktrace0(ARIADNE_ENTER_DISPATCH_MAIN_CODE);
@@ -7364,7 +7371,7 @@ dispatch_main(void)
 	}
 	DISPATCH_CLIENT_CRASH(0, "dispatch_main() must be called on the main thread");
 #endif
-#endif // defined(__wasi__)
+#endif // DISPATCH_WASI_COOPERATIVE
 }
 
 DISPATCH_NOINLINE
@@ -7639,9 +7646,17 @@ DISPATCH_ALWAYS_INLINE
 static inline pid_t
 _gettid(void)
 {
+#if DISPATCH_WASI_COOPERATIVE
 	// WASI is single-threaded; any nonzero constant works as the sole
 	// thread's id (the value seeds tsd->tid for lock-owner encoding).
 	return 1;
+#else
+	// threaded WASI: pthread_self() is a pointer to the (at least
+	// 4-aligned, never-null) musl thread structure. Shifting it right by 2
+	// yields a unique nonzero id per thread that survives the tid << 2
+	// lock-owner encoding in _dispatch_tid_self().
+	return (pid_t)((uintptr_t)pthread_self() >> 2);
+#endif
 }
 #else
 #error "SYS_gettid unavailable on this system"

@@ -69,6 +69,7 @@ _dispatch_thread_switch(dispatch_lock value, dispatch_lock_options_t flags,
 #endif // HAVE_UL_UNFAIR_LOCK
 #elif defined(__wasi__)
 #if !HAVE_UL_UNFAIR_LOCK && !HAVE_FUTEX_PI
+#if DISPATCH_WASI_COOPERATIVE
 DISPATCH_NOINLINE
 static void
 _dispatch_thread_switch(dispatch_lock value, dispatch_lock_options_t flags,
@@ -85,6 +86,18 @@ _dispatch_thread_switch(dispatch_lock value, dispatch_lock_options_t flags,
 	DISPATCH_CLIENT_CRASH(value, "single-threaded WASI deadlock: "
 			"lock contended with no other thread to release it");
 }
+#else
+DISPATCH_ALWAYS_INLINE
+static inline void
+_dispatch_thread_switch(dispatch_lock value, dispatch_lock_options_t flags,
+  uint32_t timeout)
+{
+	(void)value;
+	(void)flags;
+	(void)timeout;
+	sched_yield();
+}
+#endif // DISPATCH_WASI_COOPERATIVE
 #endif
 #elif defined(__unix__)
 #if !HAVE_UL_UNFAIR_LOCK && !HAVE_FUTEX_PI
@@ -356,7 +369,7 @@ _dispatch_sema4_timedwait(_dispatch_sema4_t *sema, dispatch_time_t timeout)
 	_pop_timer_resolution(resolution);
 	return wait_result == WAIT_TIMEOUT;
 }
-#elif defined(__wasi__)
+#elif DISPATCH_WASI_COOPERATIVE
 DISPATCH_ALWAYS_INLINE
 static inline bool
 _dispatch_sema4_try_consume(_dispatch_sema4_t *sema)
@@ -686,7 +699,7 @@ _dispatch_wait_on_address(uint32_t volatile *_address, uint32_t value,
 		return _umtx_op((void*)address, UMTX_OP_WAIT_UINT, value, (void*)(uintptr_t)sizeof(struct timespec), (void*)&ts);
 	}
 	return _umtx_op((void*)address, UMTX_OP_WAIT_UINT, value, 0, 0);
-#elif defined(__wasi__)
+#elif DISPATCH_WASI_COOPERATIVE
 	(void)flags;
 	while (os_atomic_load(address, relaxed) == value) {
 		// re-check the deadline before draining so that a continuous stream
@@ -710,6 +723,17 @@ _dispatch_wait_on_address(uint32_t volatile *_address, uint32_t value,
 		}
 	}
 	return 0;
+#elif defined(__wasi__)
+	// threaded WASI: memory.atomic.wait32 is a true futex.
+	// It returns 0 (woken), 1 (address != value), or 2 (timed out).
+	(void)flags;
+	int64_t timeout_ns = -1;
+	if (nsecs != DISPATCH_TIME_FOREVER) {
+		timeout_ns = nsecs > INT64_MAX ? INT64_MAX : (int64_t)nsecs;
+	}
+	int rc = __builtin_wasm_memory_atomic_wait32(
+			(int32_t *)address, (int32_t)value, timeout_ns);
+	return rc == 2 ? ETIMEDOUT : 0;
 #else
 #error _dispatch_wait_on_address unimplemented for this platform
 #endif
@@ -726,6 +750,8 @@ _dispatch_wake_by_address(uint32_t volatile *address)
 	WakeByAddressAll((uint32_t *)address);
 #elif defined(__FreeBSD__)
 	_umtx_op((void*)address, UMTX_OP_WAKE, INT_MAX, 0, 0);
+#elif defined(__wasi__) && !DISPATCH_WASI_COOPERATIVE
+	__builtin_wasm_memory_atomic_notify((int32_t *)address, UINT32_MAX);
 #else
 	(void)address;
 #endif
