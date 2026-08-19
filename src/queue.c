@@ -1718,8 +1718,7 @@ _dispatch_barrier_trysync_or_async_f(dispatch_lane_t dq, void *ctxt,
 	if (flags & DISPATCH_BARRIER_TRYSYNC_SUSPEND) {
 		_dispatch_retain_2(dq); // see _dispatch_lane_suspend
 	}
-	// the invoke runs with the barrier lock held; see
-	// _dispatch_barrier_sync_f_inline
+	// defer pokes: the invoke runs with the barrier lock held
 	_dispatch_cooperative_pokes_defer();
 	_dispatch_barrier_trysync_or_async_f_complete(dq, ctxt, func, flags);
 	_dispatch_cooperative_pokes_undefer();
@@ -1837,9 +1836,7 @@ static inline void
 _dispatch_barrier_sync_f_inline(dispatch_queue_t dq, void *ctxt,
 		dispatch_function_t func, uintptr_t dc_flags)
 {
-	// The body (and thus the client callout, on the inline paths) runs with
-	// the queue's barrier lock held: on cooperative single-threaded targets,
-	// pokes from inside it must defer to after the sync completes.
+	// defer pokes: inline callouts run with the barrier lock held
 	_dispatch_cooperative_pokes_defer();
 	_dispatch_barrier_sync_f_inline_impl(dq, ctxt, func, dc_flags);
 	_dispatch_cooperative_pokes_undefer();
@@ -2127,8 +2124,7 @@ _dispatch_async_and_wait_f(dispatch_queue_t dq,
 		.dsc_waiter  = tid,
 	};
 
-	// see _dispatch_barrier_sync_f_inline: the invoke can run inline with
-	// the acquired width/barrier held
+	// defer pokes: the invoke can run inline with the acquired width held
 	_dispatch_cooperative_pokes_defer();
 	_dispatch_async_and_wait_recurse(dq, &dsc, tid, dc_flags);
 	_dispatch_cooperative_pokes_undefer();
@@ -2353,9 +2349,7 @@ dispatch_queue_set_specific(dispatch_queue_t dq, const void *key,
 		return;
 	}
 
-	// On cooperative single-threaded targets the destructor push below could
-	// otherwise run the client destructor on this stack while dqsh_lock is
-	// held; defer pokes across the critical section so it runs after unlock.
+	// defer pokes: the destructor push must not run under dqsh_lock
 	_dispatch_cooperative_pokes_defer();
 	_dispatch_unfair_lock_lock(&dqsh->dqsh_lock);
 	dqs = _dispatch_queue_specific_find(dqsh, key);
