@@ -11,7 +11,11 @@
 //===----------------------------------------------------------------------===//
 
 import CDispatch
+#if hasFeature(Embedded)
+import _DispatchOverlayShims
+#else
 @_implementationOnly import _DispatchOverlayShims
+#endif
 
 public struct DispatchData : RandomAccessCollection, Sendable {
 	public typealias Iterator = DispatchDataIterator
