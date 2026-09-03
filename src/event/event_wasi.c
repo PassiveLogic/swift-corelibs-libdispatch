@@ -84,6 +84,20 @@ static bool _dispatch_wasi_harvesting;
 // still pump via _dispatch_wasi_drain_one: that is the only possible source
 // of progress for them and is documented in WAIT-PUMPING-AUDIT.md.)
 static unsigned _dispatch_wasi_poke_defer_depth;
+static void (*_dispatch_wasi_host_schedule)(void *);
+static void *_dispatch_wasi_host_context;
+static bool _dispatch_wasi_host_turn_scheduled;
+static bool _dispatch_wasi_host_schedule_in_progress;
+
+static void
+_dispatch_wasi_schedule_host_turn(void)
+{
+	if (_dispatch_wasi_host_turn_scheduled) return;
+	_dispatch_wasi_host_turn_scheduled = true;
+	_dispatch_wasi_host_schedule_in_progress = true;
+	_dispatch_wasi_host_schedule(_dispatch_wasi_host_context);
+	_dispatch_wasi_host_schedule_in_progress = false;
+}
 
 DISPATCH_ALWAYS_INLINE
 static inline bool
@@ -105,7 +119,11 @@ _dispatch_wasi_drain_unless_deferred(void)
 {
 	if (!_dispatch_wasi_draining && !_dispatch_wasi_harvesting &&
 			!_dispatch_wasi_poke_defer_depth) {
-		_dispatch_wasi_drain();
+		if (_dispatch_wasi_host_schedule) {
+			_dispatch_wasi_schedule_host_turn();
+		} else {
+			_dispatch_wasi_drain();
+		}
 	}
 }
 
@@ -845,6 +863,68 @@ _dispatch_wasi_drain(void)
 {
 	while (_dispatch_wasi_drain_one()) {
 	}
+}
+
+void
+_dispatch_wasi_event_loop_set_scheduler(void (*schedule)(void *), void *context)
+{
+	if (_dispatch_wasi_draining || _dispatch_wasi_harvesting ||
+			_dispatch_wasi_poke_defer_depth) {
+		DISPATCH_CLIENT_CRASH(0, "WASI event loop scheduler must be registered "
+				"before dispatch use");
+	}
+	if (_dispatch_wasi_host_schedule) {
+		DISPATCH_CLIENT_CRASH(0, "WASI event loop scheduler already registered");
+	}
+	_dispatch_wasi_host_schedule = schedule;
+	_dispatch_wasi_host_context = context;
+	if (_dispatch_wasi_work_pending()) {
+		_dispatch_wasi_schedule_host_turn();
+	}
+}
+
+bool
+_dispatch_wasi_event_loop_perform(unsigned long max_steps,
+		bool consumes_scheduled_turn)
+{
+	if (!_dispatch_wasi_host_schedule) {
+		DISPATCH_CLIENT_CRASH(0, "WASI event loop scheduler is not registered");
+	}
+	if (!max_steps) {
+		DISPATCH_CLIENT_CRASH(0, "WASI event loop perform requires a nonzero budget");
+	}
+	if (_dispatch_wasi_host_schedule_in_progress) {
+		DISPATCH_CLIENT_CRASH(0, "WASI event loop scheduler invoked perform inline");
+	}
+	if (_dispatch_wasi_draining || _dispatch_wasi_harvesting) {
+		DISPATCH_CLIENT_CRASH(0, "WASI event loop perform is not reentrant");
+	}
+
+	if (consumes_scheduled_turn) {
+		_dispatch_wasi_host_turn_scheduled = false;
+	}
+	_dispatch_wasi_poll_harvest(0);
+	for (unsigned long step = 0; step < max_steps; step++) {
+		if (!_dispatch_wasi_drain_one()) break;
+	}
+	bool more_work = _dispatch_wasi_work_pending();
+	more_work |= _dispatch_timers_heap[0].dth_dirty_bits != 0;
+	uint64_t next_timer = _dispatch_wasi_next_timer_ns();
+	more_work |= next_timer && next_timer <= _dispatch_uptime();
+	if (more_work) {
+		_dispatch_wasi_schedule_host_turn();
+	}
+	return more_work;
+}
+
+int64_t
+_dispatch_wasi_event_loop_next_timer_delay(void)
+{
+	uint64_t deadline = _dispatch_wasi_next_timer_ns();
+	if (!deadline) return -1;
+	uint64_t now = _dispatch_uptime();
+	if (deadline <= now) return 0;
+	return (int64_t)MIN(deadline - now, INT64_MAX);
 }
 
 bool
