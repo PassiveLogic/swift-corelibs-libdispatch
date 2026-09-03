@@ -84,6 +84,41 @@ add_wasi_test(dispatch_wasi_sync_nested_async sync-nested-async.c success
 add_wasi_test(dispatch_wasi_async_and_wait async-and-wait.c success
   "async and wait OK" 5)
 
+add_executable(dispatch_wasi_host_event_loop host-event-loop.c)
+target_compile_options(dispatch_wasi_host_event_loop PRIVATE -fblocks -Wall)
+target_link_libraries(dispatch_wasi_host_event_loop PRIVATE dispatch)
+target_link_options(dispatch_wasi_host_event_loop PRIVATE
+  -mexec-model=reactor
+  -nodefaultlibs
+  -lc
+  "${DISPATCH_WASI_BUILTINS}")
+add_test(NAME dispatch_wasi_host_event_loop
+  COMMAND "${NODE_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-host-event-loop-test.mjs"
+    "$<TARGET_FILE:dispatch_wasi_host_event_loop>")
+add_test(NAME dispatch_wasi_host_event_loop_inline
+  COMMAND "${NODE_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-host-event-loop-test.mjs"
+    --inline-check "$<TARGET_FILE:dispatch_wasi_host_event_loop>")
+add_test(NAME dispatch_wasi_host_event_loop_late_registration
+  COMMAND "${NODE_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-host-event-loop-test.mjs"
+    --late-registration-check "$<TARGET_FILE:dispatch_wasi_host_event_loop>")
+add_test(NAME dispatch_wasi_host_event_loop_timer_race
+  COMMAND "${NODE_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-host-event-loop-test.mjs"
+    --timer-race "$<TARGET_FILE:dispatch_wasi_host_event_loop>")
+set_tests_properties(dispatch_wasi_host_event_loop
+  dispatch_wasi_host_event_loop_inline
+  dispatch_wasi_host_event_loop_late_registration
+  dispatch_wasi_host_event_loop_timer_race PROPERTIES TIMEOUT 10)
+if(NOT DISPATCH_WASI_NODE_OK)
+  set_tests_properties(dispatch_wasi_host_event_loop
+    dispatch_wasi_host_event_loop_inline
+    dispatch_wasi_host_event_loop_late_registration
+    dispatch_wasi_host_event_loop_timer_race PROPERTIES DISABLED TRUE)
+endif()
+
 # Readiness-driven tests: the runner pipes stdin only after a delay, so the
 # guest must park in the host poll and wake on fd readiness to pass.
 add_executable(dispatch_wasi_read_source read-source.c)

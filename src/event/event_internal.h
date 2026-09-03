@@ -704,6 +704,11 @@ void _dispatch_event_loop_drain_timers(dispatch_timer_heap_t dth, uint32_t count
 // and the drain loop live in event_wasi.c; the actual queue draining is
 // implemented in queue.c (it needs the static drain machinery there).
 void _dispatch_wasi_drain(void);
+void _dispatch_wasi_event_loop_set_scheduler(void (*schedule)(void *),
+		void *context);
+bool _dispatch_wasi_event_loop_perform(unsigned long max_steps,
+		bool consumes_scheduled_turn);
+int64_t _dispatch_wasi_event_loop_next_timer_delay(void);
 void _dispatch_wasi_root_queue_poke(dispatch_queue_global_t dq);
 void _dispatch_wasi_main_queue_poke(void);
 // Bracket a caller-held critical section entered outside any drain (an

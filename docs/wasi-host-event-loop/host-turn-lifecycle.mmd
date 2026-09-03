@@ -1,0 +1,23 @@
+sequenceDiagram
+    participant Guest as Guest code
+    participant Dispatch as libdispatch
+    participant Host as Host event loop
+
+    Guest->>Dispatch: dispatch_async
+    Dispatch->>Dispatch: enqueue and mark pending
+    Dispatch->>Host: scheduler callback
+    Note over Dispatch,Host: Repeated pokes retain one outstanding turn
+    Dispatch-->>Guest: return before handler runs
+
+    Host->>Dispatch: perform(max_steps, true)
+    Dispatch->>Dispatch: consume scheduler latch
+    Dispatch->>Dispatch: nonblocking harvest and drain phases
+    alt runnable work remains
+        Dispatch->>Host: request or retain one turn
+    end
+    Dispatch-->>Host: more_work and next timer delay
+
+    Host->>Host: replace timeout for next deadline
+    Host->>Dispatch: perform(max_steps, false)
+    Note over Dispatch,Host: Timer turns preserve any queued scheduler turn
+    Dispatch->>Dispatch: harvest due timer and drain phases
