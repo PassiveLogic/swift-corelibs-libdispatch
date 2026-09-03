@@ -37,7 +37,7 @@ layouts can override them with `SWIFT_WASI_STATIC_RESOURCES_OVERRIDE` and
 
 ## WASI semantics
 
-Single-threaded WASI drains queues and timers cooperatively. `dispatch_main()`
+By default, single-threaded WASI drains queues and timers cooperatively. `dispatch_main()`
 drains useful main-queue work, then parks in the host on armed timers and
 event sources; it traps with
 `dispatch_main(): no runnable work on single-threaded WASI` only when the
@@ -48,7 +48,7 @@ signal source alone does not keep the park alive: signals are in-process
 never be signaled - a signal-source-only `dispatch_main()` traps as truly
 idle, deliberately.
 
-**Eager submission is specified behavior, not an accident.** At top level
+**Eager submission is the behavior when no host scheduler is registered.** At top level
 (outside any drain), a block submitted with `dispatch_async` runs to
 completion on the submitting stack before the call returns. This is the port's
 one deliberate divergence from threaded Dispatch, and it is what makes the
@@ -72,6 +72,29 @@ deliver only at blocking waits or inside `dispatch_main()` - eager drains
 fire due timers but never harvest fd readiness or pending signals, so an
 embedding that neither blocks nor calls `dispatch_main()` will not observe
 source events.
+
+**An embedded host can drive Dispatch from its own event loop.** The private
+WASI event-loop SPI registers a scheduler that requests a later host callback
+instead of draining from a poke. Requests are coalesced while a callback is
+outstanding. The host calls `_dispatch_wasi_event_loop_perform()` with a
+nonzero drain-phase budget. A manager or main-queue phase may drain a captured
+queue snapshot. When perform returns `true`, Dispatch has already requested
+or retained one outstanding turn through the registered scheduler. Hosts pass
+`consumes_scheduled_turn=true` only from that scheduler callback; timer-driven
+calls pass `false` so they do not clear a callback that is still queued.
+`_dispatch_wasi_event_loop_next_timer_delay()` returns a relative nanosecond
+delay, or `-1` when no timer is armed, so the host can own one replaceable
+timer. The scheduler must not call perform inline; doing so traps with a named
+diagnostic. Registration must happen once, before asynchronous Dispatch use.
+The Node reactor test in `host-event-loop.c` verifies deferred submission,
+step-budgeted root-queue progress, wakeup coalescing, and timers firing without
+`dispatch_main()`.
+
+The host perform operation uses a zero-timeout source harvest. It can consume
+readiness the host already made visible to WASI, but it does not notify the host
+when a file descriptor becomes ready later. An embedded fd event source still
+needs runtime-specific readiness integration. Dispatch blocking waits retain
+their existing cooperative behavior in both modes.
 
 **Wall-clock timers are anchored at arm time - a documented WASI limitation.**
 A wall-deadline timer is converted to the uptime clock when it is armed, so a

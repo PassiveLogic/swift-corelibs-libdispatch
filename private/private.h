@@ -34,7 +34,7 @@
 #include <os/base.h>
 #elif defined(_WIN32)
 #include <os/generic_win_base.h>
-#elif defined(__unix__)
+#elif defined(__unix__) || defined(__wasi__)
 #include <os/generic_unix_base.h>
 #endif
 
@@ -157,6 +157,36 @@ bool _dispatch_is_fork_of_multithreaded_parent(void);
 API_AVAILABLE(macos(10.12), ios(10.0), tvos(10.0), watchos(3.0))
 DISPATCH_EXPORT DISPATCH_NOTHROW
 void _dispatch_prohibit_transition_to_multithreaded(bool prohibit);
+
+#if defined(__wasi__)
+/*
+ * SPI for single-threaded hosts that drive Dispatch from their own event loop.
+ * The scheduler must arrange a later call to
+ * _dispatch_wasi_event_loop_perform() and return without running Dispatch.
+ * Register exactly once, before asynchronous Dispatch use. The callback and
+ * context must remain valid for the lifetime of the process.
+ */
+typedef void (*dispatch_wasi_event_loop_schedule_t)(void *_Nullable context);
+
+DISPATCH_EXPORT DISPATCH_NONNULL1 DISPATCH_NOTHROW
+void _dispatch_wasi_event_loop_set_scheduler(
+		dispatch_wasi_event_loop_schedule_t schedule,
+		void *_Nullable context);
+
+/*
+ * Runs at most max_steps drain phases. A manager or main-queue phase may drain
+ * a captured queue snapshot. consumes_scheduled_turn must be true only when
+ * the registered scheduler's callback caused this call. A true result means
+ * more work remains and a scheduler callback is already outstanding.
+ */
+DISPATCH_EXPORT DISPATCH_WARN_RESULT DISPATCH_NOTHROW
+bool _dispatch_wasi_event_loop_perform(unsigned long max_steps,
+		bool consumes_scheduled_turn);
+
+/* Returns -1 with no armed timer, 0 when due, or a relative nanosecond delay. */
+DISPATCH_EXPORT DISPATCH_WARN_RESULT DISPATCH_NOTHROW
+int64_t _dispatch_wasi_event_loop_next_timer_delay(void);
+#endif
 
 /*
  * dispatch_time convenience macros
