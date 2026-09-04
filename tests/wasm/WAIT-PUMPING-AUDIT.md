@@ -26,7 +26,7 @@ Two invariants hold at every pumping site:
 
 | Site | Reached by | Single-thread behavior | Verdict |
 |---|---|---|---|
-| `semaphore.c` `_dispatch_semaphore_wait_slow` → `_dispatch_sema4_wait` / `_dispatch_sema4_timedwait` | `dispatch_semaphore_wait` (public API) | Pumps queued work / timers / fd events until signaled or deadline. Nothing satisfiable → named crash. | **Intended.** This is the feature. Client code runs beneath the caller's `wait` - the documented eager/pumping cost. |
+| `semaphore.c` `_dispatch_semaphore_wait_slow` → `_dispatch_sema4_wait` / `_dispatch_sema4_timedwait` | `dispatch_semaphore_wait` (public API) | Pumps queued work / timers / fd events until signaled or deadline. Nothing satisfiable → named crash. | **Intended.** This is the feature. Client code runs beneath the caller's `wait` - the documented pumping cost. |
 | `semaphore.c` `_dispatch_group_wait_slow` → `_dispatch_wait_on_address(&dg->dg_gen)` | `dispatch_group_wait` (public API) | Same as semaphores; loops on the group generation. | **Intended.** |
 | `queue.c` `__DISPATCH_WAIT_FOR_QUEUE__` → `_dispatch_thread_event_wait(&dsc->dsc_event)` | Contended `dispatch_sync` / `barrier_sync` on a non-empty queue; `dispatch_block_wait` | The waiter pushes its sync record onto the target queue and parks; pumping drains the queue's prior items; the turnover signals the event (a plain sema4 counter, so the pumped signal is observed on the next loop iteration). Re-entrant sync onto the current queue is caught earlier by the owner check (correct under the `tid << 2` encoding). | **Safe by design.** Prior queue items (client code) run beneath the caller's `sync` - semantically required: those items *must* run before the sync block can. |
 | `apply.c` `_dispatch_apply_invoke` → `_dispatch_thread_event_wait(&da->da_event)` | `dispatch_apply` | With one thread, the caller runs every iteration inline; the final iteration signals the event on this same thread *before* the wait executes, so the wait consumes an already-posted count on its fast path and never parks. | **Unreachable as a blocking wait.** Covered by the passing `dispatch_wasi_api_surface` apply check. |
@@ -54,18 +54,16 @@ reachable only in dead states:
 Side-lock and unfair-lock critical sections were swept for call-outs while
 held (`_dispatch_queue_sidelock_lock` and `_dispatch_unfair_lock_lock`
 callers compiled for WASI: queue specifics, side suspend-count transfer,
-legacy target-queue setting). **One real finding**: the
-`dispatch_queue_set_specific` replace/remove path submitted the old value's
-destructor with `_dispatch_barrier_async_detached_f` *while `dqsh_lock` was
-held* - harmless on threaded platforms (the push just wakes a worker), but
-under this port's eager drain the push can run the client destructor
-immediately, on the same stack, under the lock; a destructor touching the
-same queue's specifics would then hit the recursive-lock crash. Fixed by
-wrapping the critical section in the poke-defer bracket: the destructor
-push still happens under `dqsh_lock`, but the eager drain it would trigger
-is deferred until the bracket exits after unlock (destructor submissions
-carry no ordering guarantee, so the change is unobservable on threaded
-platforms); `specific-destructor.c` pins it. The
+legacy target-queue setting). The `dispatch_queue_set_specific`
+replace/remove path submits the old value's destructor with
+`_dispatch_barrier_async_detached_f` *while `dqsh_lock` is held*. That is
+harmless here for the same reason it is harmless on threaded platforms: a
+poke only records pending work (and, with a host scheduler registered,
+requests a later host turn); it never runs the destructor on the submitting
+stack. An earlier iteration of the port drained on poke and needed bracket
+hooks around this and seven other critical sections; the current submission
+policy removes both the hazard and the hooks. `specific-destructor.c` pins
+that the destructor runs at the next pump and not inside the call. The
 queue-dealloc specifics dispose path was checked too - it runs lock-free.
 Every other audited critical section only mutates structure and returns; if
 a corrupted state ever produces same-stack lock contention anyway, the new

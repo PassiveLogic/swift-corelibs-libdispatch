@@ -1,10 +1,10 @@
 flowchart LR
-    E["Current unregistered mode<br/><br/>poke drains on the submitting stack<br/>handler runs before dispatch_async returns"]
-    H["Registered host-loop mode<br/><br/>poke schedules one host turn<br/>handler runs after control returns to the host"]
+    U["No scheduler registered<br/><br/>poke records pending work<br/>a blocking wait or dispatch_main() drains it"]
+    H["Host scheduler registered<br/><br/>poke records pending work and requests one host turn<br/>the host calls perform after control returns"]
 
-    E ~~~ H
+    U ~~~ H
 
-    classDef current fill:#fbe9df,stroke:#b45309,color:#3f2500
-    classDef proposed fill:#e0f2fe,stroke:#0369a1,color:#082f49
-    class E current
-    class H proposed
+    classDef unregistered fill:#f1f5f9,stroke:#475569,color:#0f172a
+    classDef registered fill:#e0f2fe,stroke:#0369a1,color:#082f49
+    class U unregistered
+    class H registered
