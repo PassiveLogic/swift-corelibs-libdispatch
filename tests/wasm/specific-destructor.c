@@ -20,15 +20,15 @@
 
 /*
  * Replacing a queue-specific value submits the old value's destructor to a
- * root queue. Under the eager drain that submission can run the destructor
- * immediately on the submitting stack, so it must happen after dqsh_lock is
- * dropped: a destructor that touches the same queue's specifics would
- * otherwise deadlock on the lock its own caller still holds (see
- * WAIT-PUMPING-AUDIT.md).
+ * root queue. The destructor must run at a later pump point, never on the
+ * submitting stack under dqsh_lock: a destructor that touches the same
+ * queue's specifics would otherwise deadlock on the lock its own caller
+ * still holds (see WAIT-PUMPING-AUDIT.md).
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "wasi-test-pump.h"
 
 static int skey;
 static dispatch_queue_t q;
@@ -53,16 +53,12 @@ main(void)
 	dispatch_queue_set_specific(q, &skey, (void *)1, old_value_destructor);
 	// replace: submits old_value_destructor((void *)1)
 	dispatch_queue_set_specific(q, &skey, (void *)2, NULL);
-	if (destructor_ran != 1) {
-		// eager drain runs it during the replace; if policy ever changes to
-		// deferred, drain via a blocking wait before failing
-		dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-		dispatch_async(dispatch_get_global_queue(
-				DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-			dispatch_semaphore_signal(sem);
-		});
-		dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+	if (destructor_ran) {
+		printf("FAIL: old-value destructor ran inside set_specific\n");
+		exit(1);
 	}
+	// the destructor was queued before the pump's signal block
+	wasi_test_pump();
 	if (destructor_ran != 1) {
 		printf("FAIL: old-value destructor never ran\n");
 		exit(1);

@@ -37,6 +37,7 @@ main(void)
 	__block int passed = 0;
 	dispatch_queue_t queue = dispatch_queue_create("wasi.nested.timed", NULL);
 	dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+	dispatch_semaphore_t done = dispatch_semaphore_create(0);
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), queue, ^{});
 	dispatch_async(queue, ^{
 		uint64_t start = now_ms();
@@ -44,7 +45,10 @@ main(void)
 				dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC));
 		uint64_t elapsed = now_ms() - start;
 		passed = result != 0 && elapsed >= 200;
+		dispatch_semaphore_signal(done);
 	});
+	// top-level wait: pumps the queued item
+	dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
 	if (!passed) return 1;
 	puts("probe OK");
 	return 0;

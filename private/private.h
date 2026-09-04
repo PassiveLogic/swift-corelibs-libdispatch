@@ -163,8 +163,9 @@ void _dispatch_prohibit_transition_to_multithreaded(bool prohibit);
  * SPI for single-threaded hosts that drive Dispatch from their own event loop.
  * The scheduler must arrange a later call to
  * _dispatch_wasi_event_loop_perform() and return without running Dispatch.
- * Register exactly once, before asynchronous Dispatch use. The callback and
- * context must remain valid for the lifetime of the process.
+ * Register once. Work recorded before registration is handed to the
+ * scheduler at registration. The callback and context must remain valid for
+ * the lifetime of the process.
  */
 typedef void (*dispatch_wasi_event_loop_schedule_t)(void *_Nullable context);
 

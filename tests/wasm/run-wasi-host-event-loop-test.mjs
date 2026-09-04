@@ -161,14 +161,65 @@ async function checkRejected(binary, guestMode, expected, successMessage) {
   console.log(successMessage);
 }
 
+// Work submitted before the host registers its scheduler stays pending (no
+// turn can be requested yet) and is handed over at registration: exactly one
+// turn, and the work runs on it.
 async function runLateRegistrationGuest(binary) {
   const wasi = new WASI({ version: 'preview1', args: [binary], env: {} });
+  let scheduledTurns = 0;
   const imports = wasi.getImportObject();
-  imports.dispatch_host = { schedule() {} };
+  imports.dispatch_host = { schedule() { scheduledTurns++; } };
   const module = await WebAssembly.compile(await readFile(binary));
   const instance = await WebAssembly.instantiate(module, imports);
   wasi.initialize(instance);
-  instance.exports.host_event_loop_register_during_drain();
+  const resultAtReturn = instance.exports.host_event_loop_submit();
+  if (resultAtReturn !== 0 || scheduledTurns !== 0) {
+    throw new Error(`unregistered submission ran=${resultAtReturn} ` +
+        `turns=${scheduledTurns}`);
+  }
+  instance.exports.host_event_loop_initialize();
+  if (scheduledTurns !== 1) {
+    throw new Error(`registration scheduled ${scheduledTurns} turns`);
+  }
+  let moreWork = instance.exports.host_event_loop_perform() !== 0;
+  while (moreWork) {
+    if (scheduledTurns !== 2) {
+      throw new Error(`retained turn miscounted: ${scheduledTurns}`);
+    }
+    moreWork = instance.exports.host_event_loop_perform() !== 0;
+  }
+  if (instance.exports.host_event_loop_result() !== 200) {
+    throw new Error(`late registration result ${instance.exports.host_event_loop_result()}`);
+  }
+  console.log('late registration handed pending work to the host');
+}
+
+// Registration from inside a drained work item: the drain step that runs the
+// registering block hands the still-pending signal block to the host (one
+// turn), the top-level wait then runs it, and the host's turn finds nothing.
+async function runRegisterInDrainGuest(binary) {
+  const wasi = new WASI({ version: 'preview1', args: [binary], env: {} });
+  let scheduledTurns = 0;
+  const imports = wasi.getImportObject();
+  imports.dispatch_host = { schedule() { scheduledTurns++; } };
+  const module = await WebAssembly.compile(await readFile(binary));
+  const instance = await WebAssembly.instantiate(module, imports);
+  wasi.initialize(instance);
+  instance.exports.host_event_loop_register_from_work_item();
+  const atRegistration =
+      instance.exports.host_event_loop_schedule_calls_at_registration();
+  if (atRegistration !== 0) {
+    throw new Error(`registration inside the drain requested ${atRegistration} turns itself`);
+  }
+  if (scheduledTurns !== 1) {
+    throw new Error(`registration in a drain scheduled ${scheduledTurns} turns`);
+  }
+  const moreWork = instance.exports.host_event_loop_perform() !== 0;
+  if (moreWork || scheduledTurns !== 1) {
+    throw new Error(`turn after in-drain registration: more=${moreWork} ` +
+        `turns=${scheduledTurns}`);
+  }
+  console.log('registration inside a drain handed pending work to the host');
 }
 
 async function runTimerRaceGuest(binary) {
@@ -209,12 +260,10 @@ if (!modeOrBinary) {
       'inline host callback rejected');
 } else if (modeOrBinary === '--inline-guest') {
   await runGuest(maybeBinary, true);
-} else if (modeOrBinary === '--late-registration-check') {
-  await checkRejected(maybeBinary, '--late-registration-guest',
-      'WASI event loop scheduler must be registered before dispatch use',
-      'late host scheduler registration rejected');
-} else if (modeOrBinary === '--late-registration-guest') {
+} else if (modeOrBinary === '--late-registration') {
   await runLateRegistrationGuest(maybeBinary);
+} else if (modeOrBinary === '--register-in-drain') {
+  await runRegisterInDrainGuest(maybeBinary);
 } else if (modeOrBinary === '--timer-race') {
   await runTimerRaceGuest(maybeBinary);
 } else {

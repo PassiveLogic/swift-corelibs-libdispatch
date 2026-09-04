@@ -28,6 +28,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "wasi-test-pump.h"
 
 static int app_hits;
 
@@ -63,6 +64,9 @@ main(void)
 		dispatch_semaphore_signal(cancelled);
 	});
 	dispatch_resume(src);
+	// registration completes on the manager queue at the next pump, as on
+	// threaded platforms; pump before raising so the source owns the signal
+	wasi_test_pump();
 
 	raise(SIGUSR1); // owned by the source now, not the app handler
 	if (dispatch_semaphore_wait(delivered,
