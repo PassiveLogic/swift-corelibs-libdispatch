@@ -18,8 +18,14 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
+/*
+ * Root queues drain highest QoS first: a HIGH item submitted after a LOW
+ * item still runs before it. The LOW item runs last and exits from inside
+ * dispatch_main().
+ */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static int count;
 static int order[2];
@@ -30,12 +36,17 @@ main(void)
 	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
 		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
 			order[count++] = 1;
+			if (count != 2 || order[0] != 2 || order[1] != 1) {
+				printf("FAIL: count=%d order=%d,%d\n", count, order[0],
+						order[1]);
+				exit(1);
+			}
+			puts("qos order OK");
+			exit(0);
 		});
 		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
 			order[count++] = 2;
 		});
 	});
-	if (count != 2 || order[0] != 2 || order[1] != 1) return 1;
-	puts("qos order OK");
-	return 0;
+	dispatch_main();
 }

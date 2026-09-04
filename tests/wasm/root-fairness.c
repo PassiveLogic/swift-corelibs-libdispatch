@@ -18,8 +18,15 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
+/*
+ * A self-replenishing HIGH root queue must not starve a LOW root item: the
+ * drain rotates among pending roots, so the LOW item runs partway through
+ * the HIGH chain. Pumped by dispatch_main(); the last HIGH item checks and
+ * exits.
+ */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #define HIGH_WORK_COUNT 100
 
@@ -41,7 +48,17 @@ high_work(void *context)
 		dispatch_async_f(dispatch_get_global_queue(
 				DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), NULL, default_work);
 		dispatch_async_f(queue, queue, high_work);
+		return;
 	}
+	// the self-replenishing HIGH chain is done: the LOW item must have run
+	// somewhere in the middle of it, not after it
+	if (low_seen_after <= 0 || low_seen_after >= HIGH_WORK_COUNT) {
+		printf("FAIL: high_count=%d low_seen_after=%d\n", high_count,
+				low_seen_after);
+		exit(1);
+	}
+	puts("root fairness OK");
+	exit(0);
 }
 
 static void
@@ -68,12 +85,5 @@ main(void)
 {
 	dispatch_async_f(dispatch_get_global_queue(
 			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), NULL, seed_work);
-	if (high_count != HIGH_WORK_COUNT || low_seen_after <= 0 ||
-			low_seen_after >= HIGH_WORK_COUNT) {
-		printf("high_count=%d low_seen_after=%d\n", high_count,
-				low_seen_after);
-		return 1;
-	}
-	puts("root fairness OK");
-	return 0;
+	dispatch_main();
 }

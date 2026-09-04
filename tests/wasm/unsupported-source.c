@@ -35,6 +35,6 @@ main(void)
 	if (!source) return 1;
 	dispatch_source_set_event_handler(source, ^{ puts("unexpected handler"); });
 	dispatch_resume(source);
-	puts("invalid-fd source did not crash");
-	return 0;
+	// registration completes at the pump; it must crash there
+	dispatch_main();
 }

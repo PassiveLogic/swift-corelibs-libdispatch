@@ -31,6 +31,6 @@ main(void)
 		puts("nested wait starting");
 		dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
 	});
-	puts("nested wait did not crash");
-	return 0;
+	// the pump runs the queued item, whose indefinite wait must crash
+	dispatch_main();
 }
