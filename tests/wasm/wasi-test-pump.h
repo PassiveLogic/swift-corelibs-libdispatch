@@ -18,19 +18,25 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
-#include <dispatch/dispatch.h>
-#include <stdio.h>
+/*
+ * Shared pump for focused tests. A top-level blocking wait drains pending
+ * Dispatch work. The signal block is queued on the default root queue after
+ * everything the test submitted there, so the wait returns once that earlier
+ * work ran.
+ */
+#ifndef WASI_TEST_PUMP_H
+#define WASI_TEST_PUMP_H
 
-int
-main(void)
+#include <dispatch/dispatch.h>
+
+static inline void
+wasi_test_pump(void)
 {
-	dispatch_queue_t queue = dispatch_queue_create("wasi.nested.wait", NULL);
-	dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), queue, ^{});
-	dispatch_async(queue, ^{
-		puts("nested wait starting");
-		dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
-	});
-	// the pump runs the queued item, whose indefinite wait must crash
-	dispatch_main();
+	dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT,
+			0), ^{ dispatch_semaphore_signal(sem); });
+	dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+	dispatch_release(sem);
 }
+
+#endif /* WASI_TEST_PUMP_H */

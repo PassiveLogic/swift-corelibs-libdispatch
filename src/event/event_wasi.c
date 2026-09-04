@@ -41,10 +41,16 @@
 
 // WASI (wasm32-unknown-wasip1) is single-threaded: there is no manager
 // thread, no worker thread pool, and no blocking wait primitive. This
-// backend implements a cooperative drain instead: pokes record pending work
-// (root queues, the main queue, the manager queue) and the sole thread
-// drains it eagerly, either right away when it is not already draining, or
-// from the blocking-wait loops in shims/lock.c and from dispatch_main().
+// backend implements a cooperative drain instead. Pokes only record pending
+// work (root queues, the main queue, the manager queue). A poke never runs
+// client code on the submitting stack. dispatch_async therefore keeps the
+// contract it has on threaded platforms: the block runs later, never before
+// the call returns. The sole thread drains pending work at a pump point.
+// The pump points are the blocking-wait loops in shims/lock.c,
+// dispatch_main(), and _dispatch_wasi_event_loop_perform(). A host event
+// loop calls perform after it registered a scheduler callback (see
+// private/private.h). A poke outside any drain asks that scheduler for one
+// host turn.
 // One drain step runs, in priority order: due timers (they unblock waits
 // and re-fill the queues), then the manager queue (it arms timers and
 // finishes source setup), then the thread-bound main queue, then one pending
@@ -67,23 +73,33 @@ static size_t _dispatch_wasi_next_root = DISPATCH_ROOT_QUEUE_COUNT - 1;
 static bool _dispatch_wasi_main_pending;
 static bool _dispatch_wasi_mgr_pending;
 static bool _dispatch_wasi_draining;
-// While the poll harvest walks the muxnote list, merges must only record
-// pending work: an eager drain from the merge's wakeup poke could run a
-// handler that cancels a source and frees the very muxnotes the harvest is
-// iterating. The caller's drain loop picks the work up right after the
-// harvest returns.
+// While the poll harvest walks the muxnote list, and while a drain step
+// runs, pokes only record pending work. They do not request a host turn.
+// The pump that is running picks the work up itself, and perform requests
+// the follow-up turn once it knows whether work remains. A merge poke's
+// handler could otherwise cancel a source and free the very muxnotes the
+// harvest is iterating.
 static bool _dispatch_wasi_harvesting;
-// While a caller-held critical section is on the stack outside any drain -
-// an inline-executed dispatch_sync body (the queue's barrier lock is held),
-// a dispatch_once initializer (the once gate is held), an object dispose, or
-// the specifics-hash mutation in dispatch_queue_set_specific - pokes must
-// only record pending work: an eager drain would run client code on the same
-// stack under that lock, turning programs that are correct on threaded
-// platforms into spurious deadlock crashes. The matching undefer flushes
-// once the outermost section exits. (Blocking waits inside such sections
-// still pump via _dispatch_wasi_drain_one: that is the only possible source
-// of progress for them and is documented in WAIT-PUMPING-AUDIT.md.)
-static unsigned _dispatch_wasi_poke_defer_depth;
+// Host event loop registration. With a scheduler registered, a poke outside
+// any drain requests one host turn; requests coalesce on
+// _dispatch_wasi_host_turn_scheduled until a scheduled turn consumes the
+// latch in perform. Without a scheduler, pending work waits for the next
+// pump point.
+static void (*_dispatch_wasi_host_schedule)(void *);
+static void *_dispatch_wasi_host_context;
+static bool _dispatch_wasi_host_turn_scheduled;
+static bool _dispatch_wasi_host_schedule_in_progress;
+static bool _dispatch_wasi_performing;
+
+static void
+_dispatch_wasi_schedule_host_turn(void)
+{
+	if (_dispatch_wasi_host_turn_scheduled) return;
+	_dispatch_wasi_host_turn_scheduled = true;
+	_dispatch_wasi_host_schedule_in_progress = true;
+	_dispatch_wasi_host_schedule(_dispatch_wasi_host_context);
+	_dispatch_wasi_host_schedule_in_progress = false;
+}
 
 DISPATCH_ALWAYS_INLINE
 static inline bool
@@ -96,32 +112,42 @@ _dispatch_wasi_work_pending(void)
 	return false;
 }
 
-// The single choke point for the eager-drain policy: pokes record pending
-// work always, and drain immediately only when the sole thread is not
-// already draining, not walking the muxnote list, and not inside a deferred
-// critical section.
-static void
-_dispatch_wasi_drain_unless_deferred(void)
+// Pending queue work, a dirty timer heap, or a timer that is already due:
+// anything one more drain step would act on without waiting. The clock read
+// comes last and only when a timer is armed.
+static bool
+_dispatch_wasi_has_runnable_work(void)
 {
-	if (!_dispatch_wasi_draining && !_dispatch_wasi_harvesting &&
-			!_dispatch_wasi_poke_defer_depth) {
-		_dispatch_wasi_drain();
+	if (_dispatch_wasi_work_pending()) return true;
+	if (_dispatch_timers_heap[0].dth_dirty_bits) return true;
+	uint64_t next_timer = _dispatch_wasi_next_timer_ns();
+	return next_timer && next_timer <= _dispatch_uptime();
+}
+
+// The single choke point for the submission policy: pokes record pending
+// work and never drain. Outside any drain, harvest, or perform, a registered
+// host scheduler is asked for one turn. A poke from inside one of those is
+// picked up by the running pump (see _dispatch_wasi_harvesting), and perform
+// decides after its last step.
+static void
+_dispatch_wasi_note_pending(void)
+{
+	if (_dispatch_wasi_host_schedule && !_dispatch_wasi_draining &&
+			!_dispatch_wasi_harvesting && !_dispatch_wasi_performing) {
+		_dispatch_wasi_schedule_host_turn();
 	}
 }
 
-void
-_dispatch_wasi_defer_pokes(void)
+// Pump boundary: a drain step or a harvest ended outside perform. Runnable
+// work left behind by a pump that stops (a satisfied or timed-out wait) goes
+// to the host. The cheap checks run first: no scheduler, or a turn already
+// outstanding, means no scan and no clock read.
+static void
+_dispatch_wasi_hand_off_pending(void)
 {
-	_dispatch_wasi_poke_defer_depth++;
-}
-
-void
-_dispatch_wasi_undefer_pokes(void)
-{
-	dispatch_assert(_dispatch_wasi_poke_defer_depth > 0);
-	if (--_dispatch_wasi_poke_defer_depth) return;
-	if (_dispatch_wasi_work_pending()) {
-		_dispatch_wasi_drain_unless_deferred();
+	if (_dispatch_wasi_host_schedule && !_dispatch_wasi_host_turn_scheduled &&
+			!_dispatch_wasi_performing && _dispatch_wasi_has_runnable_work()) {
+		_dispatch_wasi_note_pending();
 	}
 }
 
@@ -163,8 +189,8 @@ static void
 _dispatch_wasi_signal_handler(int signo)
 {
 	// invoked synchronously from the caller's raise(); merged by
-	// _dispatch_wasi_poll_harvest at the next blocking wait or
-	// dispatch_main() park (eager drains do not harvest)
+	// _dispatch_wasi_poll_harvest at the next pump point (a blocking wait,
+	// a dispatch_main() park, or a host turn)
 	if (signo > 0 && signo < NSIG) {
 		_dispatch_wasi_signal_pending[signo]++;
 		_dispatch_wasi_signal_pending_any = true;
@@ -501,12 +527,15 @@ static bool _dispatch_wasi_poll_harvest_locked(int timeout_ms);
 static bool
 _dispatch_wasi_poll_harvest(int timeout_ms)
 {
-	// defer eager drains from merge pokes while the muxnote list is being
-	// walked (see _dispatch_wasi_harvesting)
+	// merge pokes must not request host turns while the muxnote list is
+	// being walked (see _dispatch_wasi_harvesting)
 	dispatch_assert(!_dispatch_wasi_harvesting);
 	_dispatch_wasi_harvesting = true;
 	bool merged = _dispatch_wasi_poll_harvest_locked(timeout_ms);
 	_dispatch_wasi_harvesting = false;
+	// a timed wait can return right after this harvest without another
+	// drain step; the merged handlers must still reach the host
+	if (merged) _dispatch_wasi_hand_off_pending();
 	return merged;
 }
 
@@ -837,6 +866,7 @@ _dispatch_wasi_drain_one(void)
 		}
 	}
 	_dispatch_wasi_draining = false;
+	_dispatch_wasi_hand_off_pending();
 	return did_work;
 }
 
@@ -845,6 +875,63 @@ _dispatch_wasi_drain(void)
 {
 	while (_dispatch_wasi_drain_one()) {
 	}
+}
+
+void
+_dispatch_wasi_event_loop_set_scheduler(void (*schedule)(void *), void *context)
+{
+	if (_dispatch_wasi_host_schedule) {
+		DISPATCH_CLIENT_CRASH(0, "WASI event loop scheduler already registered");
+	}
+	_dispatch_wasi_host_schedule = schedule;
+	_dispatch_wasi_host_context = context;
+	// Work recorded before registration (static initializers, an export
+	// that ran before the host wired its loop) is handed over now. Inside a
+	// drain the running pump hands it over when its step ends.
+	_dispatch_wasi_hand_off_pending();
+}
+
+bool
+_dispatch_wasi_event_loop_perform(unsigned long max_steps,
+		bool consumes_scheduled_turn)
+{
+	if (!_dispatch_wasi_host_schedule) {
+		DISPATCH_CLIENT_CRASH(0, "WASI event loop scheduler is not registered");
+	}
+	if (!max_steps) {
+		DISPATCH_CLIENT_CRASH(0, "WASI event loop perform requires a nonzero budget");
+	}
+	if (_dispatch_wasi_host_schedule_in_progress) {
+		DISPATCH_CLIENT_CRASH(0, "WASI event loop scheduler invoked perform inline");
+	}
+	if (_dispatch_wasi_draining || _dispatch_wasi_harvesting) {
+		DISPATCH_CLIENT_CRASH(0, "WASI event loop perform is not reentrant");
+	}
+
+	if (consumes_scheduled_turn) {
+		_dispatch_wasi_host_turn_scheduled = false;
+	}
+	_dispatch_wasi_performing = true;
+	_dispatch_wasi_poll_harvest(0);
+	for (unsigned long step = 0; step < max_steps; step++) {
+		if (!_dispatch_wasi_drain_one()) break;
+	}
+	_dispatch_wasi_performing = false;
+	bool more_work = _dispatch_wasi_has_runnable_work();
+	if (more_work) {
+		_dispatch_wasi_schedule_host_turn();
+	}
+	return more_work;
+}
+
+int64_t
+_dispatch_wasi_event_loop_next_timer_delay(void)
+{
+	uint64_t deadline = _dispatch_wasi_next_timer_ns();
+	if (!deadline) return -1;
+	uint64_t now = _dispatch_uptime();
+	if (deadline <= now) return 0;
+	return (int64_t)MIN(deadline - now, INT64_MAX);
 }
 
 bool
@@ -861,14 +948,14 @@ _dispatch_wasi_root_queue_poke(dispatch_queue_global_t dq)
 		DISPATCH_INTERNAL_CRASH(dq, "Poke of a non-global root queue on WASI");
 	}
 	_dispatch_wasi_root_pending[idx] = true;
-	_dispatch_wasi_drain_unless_deferred();
+	_dispatch_wasi_note_pending();
 }
 
 void
 _dispatch_wasi_main_queue_poke(void)
 {
 	_dispatch_wasi_main_pending = true;
-	_dispatch_wasi_drain_unless_deferred();
+	_dispatch_wasi_note_pending();
 }
 
 #pragma mark dispatch_loop
@@ -884,7 +971,7 @@ _dispatch_event_loop_poke(dispatch_wlh_t wlh,
 {
 	if (wlh == DISPATCH_WLH_MANAGER) {
 		_dispatch_wasi_mgr_pending = true;
-		_dispatch_wasi_drain_unless_deferred();
+		_dispatch_wasi_note_pending();
 		return;
 	}
 	// every poke caller compiled outside DISPATCH_USE_KEVENT_WORKLOOP

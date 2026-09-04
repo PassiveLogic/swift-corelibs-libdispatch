@@ -37,9 +37,19 @@ layouts can override them with `SWIFT_WASI_STATIC_RESOURCES_OVERRIDE` and
 
 ## WASI semantics
 
-Single-threaded WASI drains queues and timers cooperatively. `dispatch_main()`
-drains useful main-queue work, then parks in the host on armed timers and
-event sources; it traps with
+Single-threaded WASI drains queues and timers cooperatively. A poke only
+records pending work. It never runs client code on the submitting stack, so
+`dispatch_async` keeps the contract it has on threaded platforms: the block
+runs later, never before the call returns. Pending work runs at a pump point:
+
+- a blocking Dispatch wait (semaphore, group, contended `dispatch_sync`,
+  `dispatch_block_wait`) issued outside any running work item
+- `dispatch_main()`
+- `_dispatch_wasi_event_loop_perform()`, called by a host event loop that
+  registered a scheduler (below)
+
+`dispatch_main()` drains useful main-queue work, then parks in the host on
+armed timers and event sources; it traps with
 `dispatch_main(): no runnable work on single-threaded WASI` only when the
 process is fully idle with no timer and no pollable event source armed. It
 cannot block forever because nothing else could ever make progress. An armed
@@ -48,30 +58,64 @@ signal source alone does not keep the park alive: signals are in-process
 never be signaled - a signal-source-only `dispatch_main()` traps as truly
 idle, deliberately.
 
-**Eager submission is specified behavior, not an accident.** At top level
-(outside any drain), a block submitted with `dispatch_async` runs to
-completion on the submitting stack before the call returns. This is the port's
-one deliberate divergence from threaded Dispatch, and it is what makes the
-library usable in embedded hosts (browser modules, reactors) that never call
-`dispatch_main()`: without it, queued work would never execute there. The
-costs: callbacks can re-enter code on the same stack that
-native callers do not expect to be re-entered there, and cross-queue ordering
-differs from threaded platforms (a `dispatch_group_notify` installed after the
-group already drained runs before later submissions). Blocks submitted from
-inside a running work item defer to the outer drain - there are no nested
-drains - and the outer drain resumes in category priority order: due timers,
-the manager queue, the main queue, then root queues by QoS. All of this is
-pinned by `eager-drain.c`; a change in these orderings is a behavior change,
-not an implementation detail. Two boundary contracts to keep in mind: inside
-a caller-held critical section (an inline `dispatch_sync` body, a
-`dispatch_once` initializer, dispose, `dispatch_queue_set_specific`) pokes
-only record work and the flush is deferred to the section's exit, but a
-*blocking wait* issued inside such a section still pumps queued work under
-the caller's lock (see `WAIT-PUMPING-AUDIT.md`); and fd/signal sources
-deliver only at blocking waits or inside `dispatch_main()` - eager drains
-fire due timers but never harvest fd readiness or pending signals, so an
-embedding that neither blocks nor calls `dispatch_main()` will not observe
-source events.
+**Every queue behaves like the Darwin main queue.** On Darwin, main-queue
+work runs only when the run loop turns. On one thread every queue is bound to
+that thread, so the same rule applies to root queues and private queues too.
+The consequences, all pinned by `deferred-submission.c`:
+
+- A block submitted at top level has not run when `dispatch_async` returns.
+  It runs at the next pump point.
+- Blocks submitted from inside a running work item run in the outer drain -
+  there are no nested drains - in category priority order: due timers, the
+  manager queue, the main queue, then root queues by QoS. Within one queue
+  the order is FIFO.
+- Cross-queue ordering matches threaded platforms where they are
+  deterministic: a `dispatch_group_notify` installed while the group is busy
+  runs after root items that were queued before the group emptied.
+- Work submitted from inside a caller-held critical section (an inline
+  `dispatch_sync` body, a `dispatch_once` initializer, dispose,
+  `dispatch_queue_set_specific`) never runs under that lock; it runs at the
+  next pump. `sync-nested-async.c`, `async-and-wait.c`, and
+  `specific-destructor.c` pin the three shapes.
+- Code that submits work and then blocks in something that is not a
+  Dispatch wait (a spin loop, `sleep()`, a blocking `read()`) sees no
+  progress, exactly as it would on the Darwin main thread. A blocking wait
+  issued inside a running work item still pumps nothing (see
+  `WAIT-PUMPING-AUDIT.md`): an indefinite one crashes at once, a timed one
+  sleeps to its own deadline.
+
+**A host event loop drives Dispatch through the private WASI SPI in
+`private/private.h`.** `_dispatch_wasi_event_loop_set_scheduler()` registers
+one callback. From then on a poke outside any drain requests one host turn
+through that callback, and requests are coalesced while a turn is
+outstanding. Work recorded before registration is handed over at
+registration. The host calls `_dispatch_wasi_event_loop_perform()` with a
+nonzero drain-phase budget. A manager or main-queue phase may drain a
+captured queue snapshot. When perform returns `true`, Dispatch has already
+requested or retained one outstanding turn through the registered scheduler.
+Hosts pass `consumes_scheduled_turn=true` only from that scheduler callback;
+timer-driven calls pass `false` so they do not clear a callback that is still
+queued. `_dispatch_wasi_event_loop_next_timer_delay()` returns a relative
+nanosecond delay, or `-1` when no timer is armed, so the host can own one
+replaceable timer. The scheduler must not call perform inline; doing so traps
+with a named diagnostic. A blocking wait at top level still pumps in this
+mode, and hands any work it leaves pending to the host. The Node reactor test
+in `host-event-loop.c` verifies deferred submission, step-budgeted root-queue
+progress, wakeup coalescing, hand-over of work submitted before
+registration, and timers firing without `dispatch_main()`.
+
+This wiring belongs to the platform layer (the JavaScript runtime that
+instantiates the module, the host shim, or `dispatch_main()` in a command
+module), the way CoreFoundation wires CFRunLoop to the main queue on Darwin
+and Foundation wires the eventfd on Linux. Consumer code is the same on every
+target.
+
+The host perform operation uses a zero-timeout source harvest. It can consume
+readiness the host already made visible to WASI, but it does not notify the
+host when a file descriptor becomes ready later. An embedded fd event source
+still needs runtime-specific readiness integration. Without a registered
+scheduler, fd and signal sources deliver only at blocking waits or inside
+`dispatch_main()`.
 
 **Wall-clock timers are anchored at arm time - a documented WASI limitation.**
 A wall-deadline timer is converted to the uptime clock when it is armed, so a
@@ -189,9 +233,14 @@ iterations of the WASI port:
   on-queue; guards the tid-vs-`DLOCK_OWNER_MASK` encoding in `shims/lock.h`
   (a constant tid that masks to zero makes every unlocked queue look owned
   by the current thread).
-- `eager-drain.c` - pins the eager-submission semantics described above:
-  top-level async runs before the call returns, nested submissions defer and
-  drain main-before-root, group notify precedes later submissions.
+- `deferred-submission.c` - pins the submission semantics described above:
+  top-level async does not run before the call returns and runs at the next
+  pump, nested submissions drain main-before-root, group notify follows
+  earlier root submissions.
+- `host-event-loop.c` - a WASI reactor driven by a Node event loop through
+  the private scheduler SPI: later-turn execution, coalescing, budgeted
+  steps, host-owned timers, hand-over at registration, and the inline
+  callback diagnostic.
 
 Event-source tests:
 

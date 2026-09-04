@@ -18,8 +18,13 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
+/*
+ * A barrier submitted between two concurrent-queue items orders them: the
+ * final barrier observes all three, then exits from inside dispatch_main().
+ */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 static int count;
 static int order[3];
@@ -33,11 +38,16 @@ main(void)
 		dispatch_async(queue, ^{ order[count++] = 1; });
 		dispatch_barrier_async(queue, ^{ order[count++] = 2; });
 		dispatch_async(queue, ^{ order[count++] = 3; });
+		dispatch_barrier_async(queue, ^{
+			if (count != 3 || order[0] != 1 || order[1] != 2 ||
+					order[2] != 3) {
+				printf("FAIL: count=%d order=%d,%d,%d\n", count, order[0],
+						order[1], order[2]);
+				exit(1);
+			}
+			puts("barrier order OK");
+			exit(0);
+		});
 	});
-	dispatch_release(queue);
-	if (count != 3 || order[0] != 1 || order[1] != 2 || order[2] != 3) {
-		return 1;
-	}
-	puts("barrier order OK");
-	return 0;
+	dispatch_main();
 }

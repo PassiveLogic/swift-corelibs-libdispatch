@@ -72,7 +72,8 @@ add_wasi_test(dispatch_wasi_blocking_waits blocking-waits.c success
 add_wasi_test(dispatch_wasi_api_surface api-surface.c success "api surface OK" 10)
 add_wasi_test(dispatch_wasi_assert_queue assert-queue.c crash
   "Block was expected to execute on queue" 5 "assert on-queue OK")
-add_wasi_test(dispatch_wasi_eager_drain eager-drain.c success "eager drain OK" 5)
+add_wasi_test(dispatch_wasi_deferred_submission deferred-submission.c success
+  "deferred submission OK" 5)
 add_wasi_test(dispatch_wasi_specific_destructor specific-destructor.c success
   "specific destructor OK" 5)
 add_wasi_test(dispatch_wasi_sema_late_signal sema-late-signal.c success
@@ -83,6 +84,47 @@ add_wasi_test(dispatch_wasi_sync_nested_async sync-nested-async.c success
   "sync nested async OK" 5)
 add_wasi_test(dispatch_wasi_async_and_wait async-and-wait.c success
   "async and wait OK" 5)
+
+add_executable(dispatch_wasi_host_event_loop host-event-loop.c)
+target_compile_options(dispatch_wasi_host_event_loop PRIVATE -fblocks -Wall)
+target_link_libraries(dispatch_wasi_host_event_loop PRIVATE dispatch)
+target_link_options(dispatch_wasi_host_event_loop PRIVATE
+  -mexec-model=reactor
+  -nodefaultlibs
+  -lc
+  "${DISPATCH_WASI_BUILTINS}")
+add_test(NAME dispatch_wasi_host_event_loop
+  COMMAND "${NODE_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-host-event-loop-test.mjs"
+    "$<TARGET_FILE:dispatch_wasi_host_event_loop>")
+add_test(NAME dispatch_wasi_host_event_loop_inline
+  COMMAND "${NODE_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-host-event-loop-test.mjs"
+    --inline-check "$<TARGET_FILE:dispatch_wasi_host_event_loop>")
+add_test(NAME dispatch_wasi_host_event_loop_late_registration
+  COMMAND "${NODE_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-host-event-loop-test.mjs"
+    --late-registration "$<TARGET_FILE:dispatch_wasi_host_event_loop>")
+add_test(NAME dispatch_wasi_host_event_loop_register_in_drain
+  COMMAND "${NODE_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-host-event-loop-test.mjs"
+    --register-in-drain "$<TARGET_FILE:dispatch_wasi_host_event_loop>")
+add_test(NAME dispatch_wasi_host_event_loop_timer_race
+  COMMAND "${NODE_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-host-event-loop-test.mjs"
+    --timer-race "$<TARGET_FILE:dispatch_wasi_host_event_loop>")
+set_tests_properties(dispatch_wasi_host_event_loop
+  dispatch_wasi_host_event_loop_inline
+  dispatch_wasi_host_event_loop_late_registration
+  dispatch_wasi_host_event_loop_register_in_drain
+  dispatch_wasi_host_event_loop_timer_race PROPERTIES TIMEOUT 10)
+if(NOT DISPATCH_WASI_NODE_OK)
+  set_tests_properties(dispatch_wasi_host_event_loop
+    dispatch_wasi_host_event_loop_inline
+    dispatch_wasi_host_event_loop_late_registration
+    dispatch_wasi_host_event_loop_register_in_drain
+    dispatch_wasi_host_event_loop_timer_race PROPERTIES DISABLED TRUE)
+endif()
 
 # Readiness-driven tests: the runner pipes stdin only after a delay, so the
 # guest must park in the host poll and wake on fd readiness to pass.

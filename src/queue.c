@@ -1718,10 +1718,7 @@ _dispatch_barrier_trysync_or_async_f(dispatch_lane_t dq, void *ctxt,
 	if (flags & DISPATCH_BARRIER_TRYSYNC_SUSPEND) {
 		_dispatch_retain_2(dq); // see _dispatch_lane_suspend
 	}
-	// defer pokes: the invoke runs with the barrier lock held
-	_dispatch_cooperative_pokes_defer();
 	_dispatch_barrier_trysync_or_async_f_complete(dq, ctxt, func, flags);
-	_dispatch_cooperative_pokes_undefer();
 }
 
 #pragma mark -
@@ -1797,7 +1794,7 @@ _dispatch_sync_recurse(dispatch_lane_t dq, void *ctxt,
 
 DISPATCH_ALWAYS_INLINE
 static inline void
-_dispatch_barrier_sync_f_inline_impl(dispatch_queue_t dq, void *ctxt,
+_dispatch_barrier_sync_f_inline(dispatch_queue_t dq, void *ctxt,
 		dispatch_function_t func, uintptr_t dc_flags)
 {
 	dispatch_tid tid = _dispatch_tid_self();
@@ -1831,17 +1828,6 @@ _dispatch_barrier_sync_f_inline_impl(dispatch_queue_t dq, void *ctxt,
 					dq, ctxt, func, dc_flags | DC_FLAG_BARRIER)));
 }
 
-DISPATCH_ALWAYS_INLINE
-static inline void
-_dispatch_barrier_sync_f_inline(dispatch_queue_t dq, void *ctxt,
-		dispatch_function_t func, uintptr_t dc_flags)
-{
-	// defer pokes: inline callouts run with the barrier lock held
-	_dispatch_cooperative_pokes_defer();
-	_dispatch_barrier_sync_f_inline_impl(dq, ctxt, func, dc_flags);
-	_dispatch_cooperative_pokes_undefer();
-}
-
 DISPATCH_NOINLINE
 static void
 _dispatch_barrier_sync_f(dispatch_queue_t dq, void *ctxt,
@@ -1860,7 +1846,7 @@ dispatch_barrier_sync_f(dispatch_queue_t dq, void *ctxt,
 
 DISPATCH_ALWAYS_INLINE
 static inline void
-_dispatch_sync_f_inline_impl(dispatch_queue_t dq, void *ctxt,
+_dispatch_sync_f_inline(dispatch_queue_t dq, void *ctxt,
 		dispatch_function_t func, uintptr_t dc_flags)
 {
 	if (likely(dq->dq_width == 1)) {
@@ -1884,17 +1870,6 @@ _dispatch_sync_f_inline_impl(dispatch_queue_t dq, void *ctxt,
 	_dispatch_introspection_sync_begin(dl);
 	_dispatch_sync_invoke_and_complete(dl, ctxt, func DISPATCH_TRACE_ARG(
 			_dispatch_trace_item_sync_push_pop(dq, ctxt, func, dc_flags)));
-}
-
-DISPATCH_ALWAYS_INLINE
-static inline void
-_dispatch_sync_f_inline(dispatch_queue_t dq, void *ctxt,
-		dispatch_function_t func, uintptr_t dc_flags)
-{
-	// see _dispatch_barrier_sync_f_inline
-	_dispatch_cooperative_pokes_defer();
-	_dispatch_sync_f_inline_impl(dq, ctxt, func, dc_flags);
-	_dispatch_cooperative_pokes_undefer();
 }
 
 DISPATCH_NOINLINE
@@ -2124,10 +2099,7 @@ _dispatch_async_and_wait_f(dispatch_queue_t dq,
 		.dsc_waiter  = tid,
 	};
 
-	// defer pokes: the invoke can run inline with the acquired width held
-	_dispatch_cooperative_pokes_defer();
-	_dispatch_async_and_wait_recurse(dq, &dsc, tid, dc_flags);
-	_dispatch_cooperative_pokes_undefer();
+	return _dispatch_async_and_wait_recurse(dq, &dsc, tid, dc_flags);
 }
 
 DISPATCH_NOINLINE
@@ -2203,10 +2175,7 @@ _dispatch_async_and_wait_block_with_privdata(dispatch_queue_t dq,
 		.dsc_waiter  = tid,
 	};
 
-	// see _dispatch_async_and_wait_f
-	_dispatch_cooperative_pokes_defer();
-	_dispatch_async_and_wait_recurse(dq, &dsc, tid, dc_flags);
-	_dispatch_cooperative_pokes_undefer();
+	return _dispatch_async_and_wait_recurse(dq, &dsc, tid, dc_flags);
 }
 
 void
@@ -2349,8 +2318,6 @@ dispatch_queue_set_specific(dispatch_queue_t dq, const void *key,
 		return;
 	}
 
-	// defer pokes: the destructor push must not run under dqsh_lock
-	_dispatch_cooperative_pokes_defer();
 	_dispatch_unfair_lock_lock(&dqsh->dqsh_lock);
 	dqs = _dispatch_queue_specific_find(dqsh, key);
 	if (dqs) {
@@ -2374,7 +2341,6 @@ dispatch_queue_set_specific(dispatch_queue_t dq, const void *key,
 	}
 
 	_dispatch_unfair_lock_unlock(&dqsh->dqsh_lock);
-	_dispatch_cooperative_pokes_undefer();
 }
 
 DISPATCH_ALWAYS_INLINE
@@ -5767,8 +5733,8 @@ _dispatch_root_queue_poke_slow(dispatch_queue_global_t dq, int n, int floor)
 	// Single-threaded WASI: there is no thread to create. Record a single
 	// pending "worker" in dgq_pending (consumed by the matching decrement in
 	// _dispatch_wasi_root_queue_drain(), mirroring _dispatch_worker_thread2)
-	// and drain cooperatively unless a drain is already running, in which
-	// case the outer drain picks the work up.
+	// and note the queue for the cooperative drain: the next pump point or
+	// host turn runs it.
 	//
 	// The 0 -> 1 cmpxchg below is the only dgq_pending increment on this
 	// path: the fast-path cmpxchg in _dispatch_root_queue_poke() must be
