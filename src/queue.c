@@ -5355,7 +5355,7 @@ _dispatch_queue_mgr_lock(struct dispatch_queue_static_s *dq)
 	});
 }
 
-#if DISPATCH_USE_KEVENT_WORKQUEUE
+#if DISPATCH_USE_KEVENT_WORKQUEUE || defined(__wasi__)
 DISPATCH_ALWAYS_INLINE
 static inline bool
 _dispatch_queue_mgr_unlock(struct dispatch_queue_static_s *dq)
@@ -5368,7 +5368,7 @@ _dispatch_queue_mgr_unlock(struct dispatch_queue_static_s *dq)
 	});
 	return _dq_state_is_dirty(old_state);
 }
-#endif // DISPATCH_USE_KEVENT_WORKQUEUE
+#endif // DISPATCH_USE_KEVENT_WORKQUEUE || defined(__wasi__)
 
 static void
 _dispatch_mgr_queue_drain(void)
@@ -5397,6 +5397,28 @@ _dispatch_mgr_queue_drain(void)
 		_dispatch_force_cache_cleanup();
 	}
 }
+
+#if defined(__wasi__)
+DISPATCH_NOINLINE
+void
+_dispatch_wasi_mgr_queue_drain(void)
+{
+	// Single-threaded WASI has no manager thread: drain the manager queue
+	// inline the way the kevent workqueue manager drain does (see
+	// _dispatch_wlh_worker_thread_init/_reset), saving and restoring the
+	// current queue because the sole thread is not a pristine worker.
+	dispatch_queue_t old_dq = _dispatch_queue_get_current();
+	_dispatch_queue_set_current(&_dispatch_mgr_q);
+	_dispatch_queue_mgr_lock(&_dispatch_mgr_q);
+	_dispatch_mgr_queue_drain();
+	bool needs_poll = _dispatch_queue_mgr_unlock(&_dispatch_mgr_q);
+	_dispatch_queue_set_current(old_dq);
+	if (needs_poll) {
+		_dispatch_trace_runtime_event(worker_request, &_dispatch_mgr_q, 1);
+		_dispatch_event_loop_poke(DISPATCH_WLH_MANAGER, 0, 0);
+	}
+}
+#endif // defined(__wasi__)
 
 void
 _dispatch_mgr_queue_push(dispatch_lane_t dq, dispatch_object_t dou,
@@ -5680,12 +5702,12 @@ _dispatch_workloop_worker_thread(uint64_t *workloop_id,
 #pragma mark -
 #pragma mark dispatch_root_queue
 
-#if DISPATCH_USE_PTHREAD_POOL
+#if DISPATCH_USE_PTHREAD_POOL && !defined(__wasi__)
 static void *_dispatch_worker_thread(void *context);
 #if defined(_WIN32)
 static unsigned WINAPI _dispatch_worker_thread_thunk(LPVOID lpParameter);
 #endif
-#endif // DISPATCH_USE_PTHREAD_POOL
+#endif // DISPATCH_USE_PTHREAD_POOL && !defined(__wasi__)
 
 #if DISPATCH_DEBUG && DISPATCH_ROOT_QUEUE_DEBUG
 #define _dispatch_root_queue_debug(...) _dispatch_debug(__VA_ARGS__)
@@ -5707,6 +5729,31 @@ DISPATCH_NOINLINE
 static void
 _dispatch_root_queue_poke_slow(dispatch_queue_global_t dq, int n, int floor)
 {
+#if defined(__wasi__)
+	// Single-threaded WASI: there is no thread to create. Record a single
+	// pending "worker" in dgq_pending (consumed by the matching decrement in
+	// _dispatch_wasi_root_queue_drain(), mirroring _dispatch_worker_thread2)
+	// and note the queue for the cooperative drain: the next pump point or
+	// host turn runs it.
+	//
+	// The 0 -> 1 cmpxchg below is the only dgq_pending increment on this
+	// path: the fast-path cmpxchg in _dispatch_root_queue_poke() must be
+	// compiled out (it is only built when !DISPATCH_USE_INTERNAL_WORKQUEUE),
+	// or dgq_pending would be raised twice per poke and never return to 0.
+#if !DISPATCH_USE_INTERNAL_WORKQUEUE
+#error the WASI cooperative drain requires DISPATCH_USE_INTERNAL_WORKQUEUE
+#endif
+	(void)floor;
+	_dispatch_root_queues_init();
+	_dispatch_debug_root_queue(dq, __func__);
+	_dispatch_trace_runtime_event(worker_request, dq, (uint64_t)n);
+	if (!os_atomic_cmpxchg2o(dq, dgq_pending, 0, 1, relaxed)) {
+		_dispatch_root_queue_debug("worker thread request still pending for "
+				"global queue: %p", dq);
+		return;
+	}
+	_dispatch_wasi_root_queue_poke(dq);
+#else // defined(__wasi__)
 	int remaining = n;
 #if !defined(_WIN32)
 	int r = ENOSYS;
@@ -5814,6 +5861,7 @@ _dispatch_root_queue_poke_slow(dispatch_queue_global_t dq, int n, int floor)
 #else
 	(void)floor;
 #endif // DISPATCH_USE_PTHREAD_POOL
+#endif // defined(__wasi__)
 }
 
 DISPATCH_NOINLINE
@@ -6113,6 +6161,7 @@ _dispatch_root_queue_drain_deferred_item(dispatch_deferred_items_t ddi
 }
 #endif
 
+#if !defined(__wasi__)
 DISPATCH_NOT_TAIL_CALLED // prevent tailcall (for Instrument DTrace probe)
 static void
 _dispatch_root_queue_drain(dispatch_queue_global_t dq,
@@ -6159,6 +6208,46 @@ _dispatch_root_queue_drain(dispatch_queue_global_t dq,
 	_dispatch_clear_basepri();
 	_dispatch_queue_set_current(NULL);
 }
+#endif // !defined(__wasi__)
+
+#if defined(__wasi__)
+DISPATCH_NOINLINE
+void
+_dispatch_wasi_root_queue_drain(dispatch_queue_global_t dq)
+{
+	// Cooperative stand-in for one worker turn. Limit the turn to one root
+	// item so event_wasi.c can rotate among pending roots between turns.
+	dispatch_queue_t old_dq = _dispatch_queue_get_current();
+	_dispatch_queue_set_current(NULL);
+	int pending = os_atomic_dec2o(dq, dgq_pending, relaxed);
+	dispatch_assert(pending >= 0);
+	(void)pending;
+
+	dispatch_priority_t pri = dq->dq_priority;
+	_dispatch_queue_set_current(dq);
+	_dispatch_init_basepri(pri);
+	_dispatch_adopt_wlh_anon();
+
+	dispatch_invoke_context_s dic = { };
+	_dispatch_perfmon_start();
+	struct dispatch_object_s *item = _dispatch_root_queue_drain_one(dq);
+	if (item) {
+		_dispatch_continuation_pop_inline(item, &dic,
+				DISPATCH_INVOKE_WORKER_DRAIN |
+						DISPATCH_INVOKE_REDIRECTING_DRAIN, dq);
+		(void)_dispatch_reset_basepri_override();
+	}
+
+	if (pri & DISPATCH_PRIORITY_FLAG_OVERCOMMIT) {
+		_dispatch_perfmon_end(perfmon_thread_worker_oc);
+	} else {
+		_dispatch_perfmon_end(perfmon_thread_worker_non_oc);
+	}
+	_dispatch_reset_wlh();
+	_dispatch_clear_basepri();
+	_dispatch_queue_set_current(old_dq);
+}
+#endif // defined(__wasi__)
 
 #if !DISPATCH_USE_INTERNAL_WORKQUEUE
 static void
@@ -6217,6 +6306,7 @@ _dispatch_root_queue_init_pthread_pool(dispatch_queue_global_t dq,
 	_dispatch_sema4_create(sema, _DSEMA4_POLICY_LIFO);
 }
 
+#if !defined(__wasi__)
 // 6618342 Contact the team that owns the Instrument DTrace probe before
 //         renaming this symbol
 static void *
@@ -6238,7 +6328,7 @@ _dispatch_worker_thread(void *context)
 		pqc->dpq_thread_configure();
 	}
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__wasi__)
 	// workaround tweaks the kernel workqueue does for us
 	_dispatch_sigmask();
 #endif
@@ -6358,6 +6448,7 @@ _dispatch_worker_thread_thunk(LPVOID lpParameter)
 	return 0;
 }
 #endif // defined(_WIN32)
+#endif // !defined(__wasi__)
 #endif // DISPATCH_USE_PTHREAD_POOL
 
 DISPATCH_NOINLINE
@@ -6546,7 +6637,7 @@ _dispatch_pthread_root_queue_dispose(dispatch_queue_global_t dq,
 #pragma mark -
 #pragma mark dispatch_runloop_queue
 
-#ifndef __linux__
+#if !defined(__linux__) && !defined(__wasi__)
 DISPATCH_STATIC_GLOBAL(bool _dispatch_program_is_probably_callback_driven);
 #endif
 
@@ -6877,6 +6968,13 @@ _dispatch_main_queue_update_priority_from_thread(void)
 	}
 }
 
+#endif // DISPATCH_COCOA_COMPAT
+#if DISPATCH_COCOA_COMPAT || defined(__wasi__)
+// Shared between the CFRunLoop callback path (DISPATCH_COCOA_COMPAT) and the
+// cooperative WASI drain, which owns the thread-bound main queue's drain lock
+// for the lifetime of the program. The runloop-handle initialization and the
+// thread-QoS override propagation are runloop/Darwin machinery and compile
+// only for COCOA_COMPAT.
 static void
 _dispatch_main_queue_drain(dispatch_queue_main_t dq)
 {
@@ -6887,19 +6985,27 @@ _dispatch_main_queue_drain(dispatch_queue_main_t dq)
 	}
 
 	_dispatch_perfmon_start_notrace();
+#if defined(__wasi__)
+#define _DISPATCH_MAIN_QUEUE_DRAIN_CALLER "_dispatch_wasi_main_queue_drain"
+#else
+#define _DISPATCH_MAIN_QUEUE_DRAIN_CALLER "_dispatch_main_queue_callback_4CF"
+#endif
 	if (unlikely(!_dispatch_queue_is_thread_bound(dq))) {
-		DISPATCH_CLIENT_CRASH(0, "_dispatch_main_queue_callback_4CF called"
+		DISPATCH_CLIENT_CRASH(0, _DISPATCH_MAIN_QUEUE_DRAIN_CALLER " called"
 				" after dispatch_main()");
 	}
 	uint64_t dq_state = os_atomic_load2o(dq, dq_state, relaxed);
 	if (unlikely(!_dq_state_drain_locked_by_self(dq_state))) {
 		DISPATCH_CLIENT_CRASH((uintptr_t)dq_state,
-				"_dispatch_main_queue_callback_4CF called"
+				_DISPATCH_MAIN_QUEUE_DRAIN_CALLER " called"
 				" from the wrong thread");
 	}
+#undef _DISPATCH_MAIN_QUEUE_DRAIN_CALLER
 
+#if DISPATCH_COCOA_COMPAT
 	dispatch_once_f(&_dispatch_main_q_handle_pred, dq,
 			_dispatch_runloop_queue_handle_init);
+#endif
 
 	// <rdar://problem/23256682> hide the frame chaining when CFRunLoop
 	// drains the main runloop, as this should not be observable that way
@@ -6908,12 +7014,14 @@ _dispatch_main_queue_drain(dispatch_queue_main_t dq)
 
 	pthread_priority_t pp = _dispatch_get_priority();
 	dispatch_priority_t pri = _dispatch_priority_from_pp(pp);
-	dispatch_qos_t qos = _dispatch_priority_qos(pri);
 	voucher_t voucher = _voucher_copy();
 
+#if DISPATCH_COCOA_COMPAT
+	dispatch_qos_t qos = _dispatch_priority_qos(pri);
 	if (unlikely(qos != _dispatch_priority_qos(dq->dq_priority))) {
 		_dispatch_main_queue_update_priority_from_thread();
 	}
+#endif
 	dispatch_priority_t old_dbp = _dispatch_set_basepri(pri);
 	_dispatch_set_basepri_override_qos(DISPATCH_QOS_SATURATED);
 
@@ -6936,6 +7044,8 @@ _dispatch_main_queue_drain(dispatch_queue_main_t dq)
 	_dispatch_force_cache_cleanup();
 	_dispatch_perfmon_end_notrace();
 }
+#endif // DISPATCH_COCOA_COMPAT || defined(__wasi__)
+#if DISPATCH_COCOA_COMPAT
 
 static bool
 _dispatch_runloop_queue_drain_one(dispatch_lane_t dq)
@@ -7105,6 +7215,18 @@ _dispatch_main_queue_push(dispatch_queue_main_t dq, dispatch_object_t dou,
 	}
 }
 
+#if defined(__wasi__)
+void
+_dispatch_wasi_main_queue_drain(void)
+{
+	// the shared _dispatch_main_queue_drain above: the runloop-handle and
+	// thread-QoS-override steps it gates under DISPATCH_COCOA_COMPAT do not
+	// exist here (no runloop handle; without HAVE_PTHREAD_WORKQUEUE_QOS both
+	// sides of the QoS check are always 0)
+	_dispatch_main_queue_drain(&_dispatch_main_q);
+}
+#endif // defined(__wasi__)
+
 void
 _dispatch_main_queue_wakeup(dispatch_queue_main_t dq, dispatch_qos_t qos,
 		dispatch_wakeup_flags_t flags)
@@ -7114,10 +7236,19 @@ _dispatch_main_queue_wakeup(dispatch_queue_main_t dq, dispatch_qos_t qos,
 		return _dispatch_runloop_queue_wakeup(dq->_as_dl, qos, flags);
 	}
 #endif
+#if defined(__wasi__)
+	if (_dispatch_queue_is_thread_bound(dq)) {
+		// nothing else can run the thread-bound main queue on
+		// single-threaded WASI: note it for the cooperative drain, after
+		// letting the lane wakeup do the regular dq_state maintenance
+		_dispatch_lane_wakeup(dq, qos, flags);
+		return _dispatch_wasi_main_queue_poke();
+	}
+#endif
 	return _dispatch_lane_wakeup(dq, qos, flags);
 }
 
-#if !defined(_WIN32)
+#if !defined(_WIN32) && !defined(__wasi__)
 DISPATCH_NOINLINE DISPATCH_NORETURN
 static void
 _dispatch_sigsuspend(void)
@@ -7128,8 +7259,9 @@ _dispatch_sigsuspend(void)
 		sigsuspend(&mask);
 	}
 }
-#endif // !defined(_WIN32)
+#endif // !defined(_WIN32) && !defined(__wasi__)
 
+#if !defined(__wasi__)
 DISPATCH_NORETURN
 static void
 _dispatch_sig_thread(void *ctxt DISPATCH_UNUSED)
@@ -7143,11 +7275,31 @@ _dispatch_sig_thread(void *ctxt DISPATCH_UNUSED)
 	_dispatch_sigsuspend();
 #endif
 }
+#endif // !defined(__wasi__)
 
 void
 dispatch_main(void)
 {
 	_dispatch_root_queues_init();
+#if defined(__wasi__)
+	// Cooperative single-threaded WASI: there is no way to park the main
+	// thread while other threads do the work, so dispatch_main() itself
+	// becomes the drain loop. Armed timers and event sources (fd readiness,
+	// pending emulated signals) park the loop in a host wait; when the
+	// process is fully idle with none of those, waiting would hang forever:
+	// crash loudly instead.
+	_dispatch_object_debug(&_dispatch_main_q, "%s", __func__);
+	for (;;) {
+		_dispatch_wasi_drain();
+		uint64_t deadline = _dispatch_wasi_next_timer_ns();
+		if (deadline || _dispatch_wasi_has_event_sources()) {
+			_dispatch_wasi_wait_for_events(deadline);
+			continue;
+		}
+		DISPATCH_CLIENT_CRASH(0,
+				"dispatch_main(): no runnable work on single-threaded WASI");
+	}
+#else // defined(__wasi__)
 #if HAVE_PTHREAD_MAIN_NP
 	if (pthread_main_np()) {
 #endif
@@ -7178,6 +7330,7 @@ dispatch_main(void)
 	}
 	DISPATCH_CLIENT_CRASH(0, "dispatch_main() must be called on the main thread");
 #endif
+#endif // defined(__wasi__)
 }
 
 DISPATCH_NOINLINE
@@ -7209,7 +7362,7 @@ _dispatch_queue_cleanup2(void)
 	// similar non-POSIX API was called
 	// this has to run before the DISPATCH_COCOA_COMPAT below
 	// See dispatch_main for call to _dispatch_sig_thread on linux.
-#ifndef __linux__
+#if !defined(__linux__) && !defined(__wasi__)
 	if (_dispatch_program_is_probably_callback_driven) {
 		_dispatch_barrier_async_detached_f(_dispatch_get_default_queue(true),
 				NULL, _dispatch_sig_thread);
@@ -7446,6 +7599,15 @@ static inline DWORD
 _gettid(void)
 {
 	return GetCurrentThreadId();
+}
+#elif defined(__wasi__)
+DISPATCH_ALWAYS_INLINE
+static inline pid_t
+_gettid(void)
+{
+	// WASI is single-threaded; any nonzero constant works as the sole
+	// thread's id (the value seeds tsd->tid for lock-owner encoding).
+	return 1;
 }
 #else
 #error "SYS_gettid unavailable on this system"
