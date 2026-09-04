@@ -65,6 +65,8 @@ test_fifo(void)
 	for (int i = 0; i < 10; i++) {
 		dispatch_async(queue, ^{ order[count++] = i; });
 	}
+	CHECK(count == 0); // nothing runs before a pump
+	dispatch_sync(queue, ^{ }); // contended: pumps the ten items first
 	CHECK(count == 10);
 	for (int i = 0; i < 10; i++) CHECK(order[i] == i);
 	dispatch_release(queue);
@@ -82,6 +84,11 @@ test_nested_fifo(void)
 		}
 		order[count++] = 100;
 	});
+	// the first contended sync is queued ahead of the ten nested items and
+	// pumps only the outer block; the second pumps the ten
+	dispatch_sync(queue, ^{ });
+	CHECK(count == 1 && order[0] == 100);
+	dispatch_sync(queue, ^{ });
 	CHECK(count == 11 && order[0] == 100);
 	for (int i = 0; i < 10; i++) CHECK(order[i + 1] == i);
 	dispatch_release(queue);

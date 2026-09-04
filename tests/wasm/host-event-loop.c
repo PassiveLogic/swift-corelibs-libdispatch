@@ -25,7 +25,8 @@
 #include <stdint.h>
 
 void host_event_loop_initialize(void);
-void host_event_loop_register_during_drain(void);
+void host_event_loop_register_from_work_item(void);
+int host_event_loop_schedule_calls_at_registration(void);
 int host_event_loop_submit(void);
 int host_event_loop_submit_second_burst(void);
 int host_event_loop_submit_timer_only(void);
@@ -42,11 +43,14 @@ static int immediate_count;
 static int immediate_order[2];
 static int timer_count;
 static int second_burst_count;
+static int schedule_calls;
+static int schedule_calls_at_registration = -1;
 
 static void
 schedule_host_turn(void *context)
 {
 	(void)context;
+	schedule_calls++;
 	host_schedule();
 }
 
@@ -57,13 +61,31 @@ host_event_loop_initialize(void)
 	_dispatch_wasi_event_loop_set_scheduler(schedule_host_turn, NULL);
 }
 
-__attribute__((export_name("host_event_loop_register_during_drain")))
+// Registers from inside a running work item, pumped by a top-level wait.
+// Registration inside a drain must not request a turn itself; the drain
+// step hands over the work that is still pending when it ends.
+__attribute__((export_name("host_event_loop_register_from_work_item")))
 void
-host_event_loop_register_during_drain(void)
+host_event_loop_register_from_work_item(void)
 {
-	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+	dispatch_queue_t queue = dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+	dispatch_semaphore_t done = dispatch_semaphore_create(0);
+	dispatch_async(queue, ^{
 		_dispatch_wasi_event_loop_set_scheduler(schedule_host_turn, NULL);
+		// still inside the drain step: no turn may have been requested yet
+		schedule_calls_at_registration = schedule_calls;
 	});
+	dispatch_async(queue, ^{ dispatch_semaphore_signal(done); });
+	dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+	dispatch_release(done);
+}
+
+__attribute__((export_name("host_event_loop_schedule_calls_at_registration")))
+int
+host_event_loop_schedule_calls_at_registration(void)
+{
+	return schedule_calls_at_registration;
 }
 
 __attribute__((export_name("host_event_loop_submit")))

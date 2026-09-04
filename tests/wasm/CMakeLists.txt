@@ -72,7 +72,8 @@ add_wasi_test(dispatch_wasi_blocking_waits blocking-waits.c success
 add_wasi_test(dispatch_wasi_api_surface api-surface.c success "api surface OK" 10)
 add_wasi_test(dispatch_wasi_assert_queue assert-queue.c crash
   "Block was expected to execute on queue" 5 "assert on-queue OK")
-add_wasi_test(dispatch_wasi_eager_drain eager-drain.c success "eager drain OK" 5)
+add_wasi_test(dispatch_wasi_deferred_submission deferred-submission.c success
+  "deferred submission OK" 5)
 add_wasi_test(dispatch_wasi_specific_destructor specific-destructor.c success
   "specific destructor OK" 5)
 add_wasi_test(dispatch_wasi_sema_late_signal sema-late-signal.c success
@@ -103,7 +104,11 @@ add_test(NAME dispatch_wasi_host_event_loop_inline
 add_test(NAME dispatch_wasi_host_event_loop_late_registration
   COMMAND "${NODE_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-host-event-loop-test.mjs"
-    --late-registration-check "$<TARGET_FILE:dispatch_wasi_host_event_loop>")
+    --late-registration "$<TARGET_FILE:dispatch_wasi_host_event_loop>")
+add_test(NAME dispatch_wasi_host_event_loop_register_in_drain
+  COMMAND "${NODE_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-host-event-loop-test.mjs"
+    --register-in-drain "$<TARGET_FILE:dispatch_wasi_host_event_loop>")
 add_test(NAME dispatch_wasi_host_event_loop_timer_race
   COMMAND "${NODE_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-host-event-loop-test.mjs"
@@ -111,11 +116,13 @@ add_test(NAME dispatch_wasi_host_event_loop_timer_race
 set_tests_properties(dispatch_wasi_host_event_loop
   dispatch_wasi_host_event_loop_inline
   dispatch_wasi_host_event_loop_late_registration
+  dispatch_wasi_host_event_loop_register_in_drain
   dispatch_wasi_host_event_loop_timer_race PROPERTIES TIMEOUT 10)
 if(NOT DISPATCH_WASI_NODE_OK)
   set_tests_properties(dispatch_wasi_host_event_loop
     dispatch_wasi_host_event_loop_inline
     dispatch_wasi_host_event_loop_late_registration
+    dispatch_wasi_host_event_loop_register_in_drain
     dispatch_wasi_host_event_loop_timer_race PROPERTIES DISABLED TRUE)
 endif()
 
