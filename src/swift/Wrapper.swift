@@ -11,7 +11,11 @@
 //===----------------------------------------------------------------------===//
 
 import CDispatch
+#if hasFeature(Embedded)
+import _DispatchOverlayShims
+#else
 @_implementationOnly import _DispatchOverlayShims
+#endif
 
 // This file contains declarations that are provided by the
 // importer via Dispatch.apinote when the platform has Objective-C support
@@ -213,7 +217,16 @@ internal class __DispatchData : DispatchObject {
 
 public typealias DispatchSourceHandler = @convention(block) () -> Void
 
-public protocol DispatchSourceProtocol {
+#if hasFeature(Embedded)
+// Embedded Swift only supports class-bound existentials. The only conformer
+// is the DispatchSource class, so the bound adds no real restriction there.
+// Any is a no-op constraint, so other platforms are unchanged.
+public typealias _DispatchSourceProtocolConstraint = AnyObject
+#else
+public typealias _DispatchSourceProtocolConstraint = Any
+#endif
+
+public protocol DispatchSourceProtocol: _DispatchSourceProtocolConstraint {
 	func setEventHandler(qos: DispatchQoS, flags: DispatchWorkItemFlags, handler: DispatchSourceHandler?)
 
 	func setEventHandler(handler: DispatchWorkItem)

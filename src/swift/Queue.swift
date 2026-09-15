@@ -13,7 +13,11 @@
 // dispatch/queue.h
 
 import CDispatch
+#if hasFeature(Embedded)
+import _DispatchOverlayShims
+#else
 @_implementationOnly import _DispatchOverlayShims
+#endif
 
 public final class DispatchSpecificKey<T> {
 	public init() {}
