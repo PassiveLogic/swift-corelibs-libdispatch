@@ -21,27 +21,39 @@
 #ifndef __DISPATCH_EVENT_EVENT_CONFIG__
 #define __DISPATCH_EVENT_EVENT_CONFIG__
 
-#if defined(__wasi__)
+#if defined(__wasi__) && !defined(_REENTRANT)
 #	define DISPATCH_EVENT_BACKEND_EPOLL 0
 #	define DISPATCH_EVENT_BACKEND_KEVENT 0
 #	define DISPATCH_EVENT_BACKEND_WASI 1
+#	define DISPATCH_EVENT_BACKEND_WASI_THREADS 0
+#	define DISPATCH_EVENT_BACKEND_WINDOWS 0
+#elif defined(__wasi__)
+// wasm32-wasip1-threads: experimental threaded mode; a manager thread on a
+// condition variable replaces the cooperative drain (event_wasi_threads.c)
+#	define DISPATCH_EVENT_BACKEND_EPOLL 0
+#	define DISPATCH_EVENT_BACKEND_KEVENT 0
+#	define DISPATCH_EVENT_BACKEND_WASI 0
+#	define DISPATCH_EVENT_BACKEND_WASI_THREADS 1
 #	define DISPATCH_EVENT_BACKEND_WINDOWS 0
 #elif defined(__linux__)
 #	include <sys/eventfd.h>
 #	define DISPATCH_EVENT_BACKEND_EPOLL 1
 #	define DISPATCH_EVENT_BACKEND_KEVENT 0
 #	define DISPATCH_EVENT_BACKEND_WASI 0
+#	define DISPATCH_EVENT_BACKEND_WASI_THREADS 0
 #	define DISPATCH_EVENT_BACKEND_WINDOWS 0
 #elif __has_include(<sys/event.h>)
 #	include <sys/event.h>
 #	define DISPATCH_EVENT_BACKEND_EPOLL 0
 #	define DISPATCH_EVENT_BACKEND_KEVENT 1
 #	define DISPATCH_EVENT_BACKEND_WASI 0
+#	define DISPATCH_EVENT_BACKEND_WASI_THREADS 0
 #	define DISPATCH_EVENT_BACKEND_WINDOWS 0
 #elif defined(_WIN32)
 #	define DISPATCH_EVENT_BACKEND_EPOLL 0
 #	define DISPATCH_EVENT_BACKEND_KEVENT 0
 #	define DISPATCH_EVENT_BACKEND_WASI 0
+#	define DISPATCH_EVENT_BACKEND_WASI_THREADS 0
 #	define DISPATCH_EVENT_BACKEND_WINDOWS 1
 #else
 #	error unsupported event loop

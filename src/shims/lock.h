@@ -284,10 +284,11 @@ void _dispatch_sema4_init(_dispatch_sema4_t *sema, int policy);
 #define _dispatch_sema4_is_created(sema)   ((void)sema, 1)
 #define _dispatch_sema4_create_slow(sema, policy) ((void)sema, (void)policy)
 
-#elif defined(__wasi__)
+#elif DISPATCH_WASI_COOPERATIVE
 
 // Single-threaded WASI: a plain counter; waiters make progress by
 // cooperatively draining pending dispatch work instead of blocking
+// (threaded WASI builds use USE_POSIX_SEM instead)
 typedef uint32_t _dispatch_sema4_t;
 #define _DSEMA4_POLICY_FIFO 0
 #define _DSEMA4_POLICY_LIFO 0
@@ -301,7 +302,7 @@ typedef uint32_t _dispatch_sema4_t;
 #error "port has to implement _dispatch_sema4_t"
 #endif
 
-#if defined(__wasi__)
+#if DISPATCH_WASI_COOPERATIVE
 // Cooperative drain support for single-threaded WASI, implemented in
 // src/event/event_wasi.c: blocking waits drain pending dispatch work and
 // timers instead of blocking the sole thread.

@@ -207,7 +207,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
   set(HAVE_STRLCPY 1 CACHE BOOL "WASI libc result")
   set(HAVE_SYSCONF 1 CACHE BOOL "WASI libc result")
   set(HAVE_ARC4RANDOM 1 CACHE BOOL "WASI libc result")
-  set(USE_POSIX_SEM 0 CACHE BOOL "WASI libc result")
+  if(DISPATCH_WASI_THREADS)
+    # wasip1-threads: sem_t is a real blocking semaphore (proven under
+    # wasmtime v24, including sem_timedwait)
+    set(USE_POSIX_SEM 1 CACHE BOOL "WASI threads libc result")
+  else()
+    set(USE_POSIX_SEM 0 CACHE BOOL "WASI libc result")
+  endif()
 endif()
 
 

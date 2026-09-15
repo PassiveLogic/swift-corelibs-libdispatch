@@ -667,6 +667,16 @@ _dispatch_fork_becomes_unsafe(void)
 #define DISPATCH_PERF_MON 0
 #endif
 
+// wasm32-wasip1 is single-threaded and uses the cooperative event backend.
+// wasm32-wasip1-threads (-pthread, which defines _REENTRANT) is an
+// experimental threaded mode that behaves like a generic POSIX platform:
+// real worker threads, blocking waits, no cooperative pumping.
+#if defined(__wasi__) && !defined(_REENTRANT)
+#define DISPATCH_WASI_COOPERATIVE 1
+#else
+#define DISPATCH_WASI_COOPERATIVE 0
+#endif
+
 /* #includes dependent on internal.h */
 #include "shims.h"
 #include "event/event_internal.h"

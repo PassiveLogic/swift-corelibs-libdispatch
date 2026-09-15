@@ -39,6 +39,7 @@ add_library(dispatch
   event/event_internal.h
   event/event_kevent.c
   event/event_wasi.c
+  event/event_wasi_threads.c
   event/event_windows.c
   firehose/firehose_internal.h
   shims/android_stubs.h
@@ -107,8 +108,13 @@ elseif(ANDROID)
   target_compile_options(dispatch PRIVATE
     -U_GNU_SOURCE)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "WASI")
-  target_compile_definitions(dispatch PRIVATE
-    DISPATCH_HW_CONFIG_UP=1)
+  if(NOT DISPATCH_WASI_THREADS)
+    # single-threaded wasip1 is a uniprocessor by construction; the threads
+    # target is not (and DISPATCH_HW_CONFIG_UP also shrinks continuations
+    # below sizeof(struct dispatch_apply_s) there)
+    target_compile_definitions(dispatch PRIVATE
+      DISPATCH_HW_CONFIG_UP=1)
+  endif()
   target_compile_definitions(dispatch PUBLIC
     "$<$<COMPILE_LANGUAGE:C,CXX>:_WASI_EMULATED_SIGNAL>"
     "$<$<COMPILE_LANGUAGE:C,CXX>:_WASI_EMULATED_MMAN>"
