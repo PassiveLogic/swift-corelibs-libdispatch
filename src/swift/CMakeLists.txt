@@ -22,11 +22,16 @@ target_compile_options(swiftDispatch PRIVATE
   "SHELL:-Xcc -I${PROJECT_SOURCE_DIR}/src/swift/shims")
 if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
   target_compile_options(swiftDispatch PUBLIC
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-sdk \"${CMAKE_SYSROOT}\">"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-resource-dir \"${SWIFT_WASI_STATIC_RESOURCES}\">"
     "$<$<COMPILE_LANGUAGE:Swift>:-static-stdlib>")
-  target_link_options(swiftDispatch INTERFACE
-    "SHELL:-Xclang-linker -resource-dir -Xclang-linker \"${SWIFT_WASI_CLANG_RESOURCES}\"")
+  if(SWIFT_WASI_STATIC_RESOURCES)
+    target_compile_options(swiftDispatch PUBLIC
+      "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-sdk \"${CMAKE_SYSROOT}\">"
+      "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-resource-dir \"${SWIFT_WASI_STATIC_RESOURCES}\">")
+  endif()
+  if(SWIFT_WASI_CLANG_RESOURCES)
+    target_link_options(swiftDispatch INTERFACE
+      "SHELL:-Xclang-linker -resource-dir -Xclang-linker \"${SWIFT_WASI_CLANG_RESOURCES}\"")
+  endif()
 endif()
 target_compile_options(swiftDispatch PUBLIC
   "SHELL:-vfsoverlay ${CMAKE_BINARY_DIR}/dispatch-vfs-overlay.yaml")
