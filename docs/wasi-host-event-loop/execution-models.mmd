@@ -1,0 +1,10 @@
+flowchart LR
+    U["No scheduler registered<br/><br/>poke records pending work<br/>a blocking wait or dispatch_main() drains it"]
+    H["Host scheduler registered<br/><br/>poke records pending work and requests one host turn<br/>the host calls perform after control returns"]
+
+    U ~~~ H
+
+    classDef unregistered fill:#f1f5f9,stroke:#475569,color:#0f172a
+    classDef registered fill:#e0f2fe,stroke:#0369a1,color:#082f49
+    class U unregistered
+    class H registered

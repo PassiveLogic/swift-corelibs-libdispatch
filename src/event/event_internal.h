@@ -699,6 +699,26 @@ void _dispatch_event_loop_timer_delete(dispatch_timer_heap_t dth, uint32_t tidx)
 
 void _dispatch_event_loop_drain_timers(dispatch_timer_heap_t dth, uint32_t count);
 
+#if DISPATCH_EVENT_BACKEND_WASI
+// Cooperative drain for single-threaded WASI. Pokes only record pending
+// work; the pump points (blocking waits, dispatch_main, a registered host
+// loop's perform) drain it. The bookkeeping and the drain loop live in
+// event_wasi.c; the actual queue draining is implemented in queue.c (it
+// needs the static drain machinery there).
+void _dispatch_wasi_drain(void);
+void _dispatch_wasi_event_loop_set_scheduler(void (*schedule)(void *),
+		void *context);
+bool _dispatch_wasi_event_loop_perform(unsigned long max_steps,
+		bool consumes_scheduled_turn);
+int64_t _dispatch_wasi_event_loop_next_timer_delay(void);
+void _dispatch_wasi_root_queue_poke(dispatch_queue_global_t dq);
+void _dispatch_wasi_main_queue_poke(void);
+// implemented in queue.c on behalf of the WASI event backend:
+void _dispatch_wasi_root_queue_drain(dispatch_queue_global_t dq);
+void _dispatch_wasi_mgr_queue_drain(void);
+void _dispatch_wasi_main_queue_drain(void);
+#endif // DISPATCH_EVENT_BACKEND_WASI
+
 DISPATCH_ALWAYS_INLINE
 static inline void
 _dispatch_timers_heap_dirty(dispatch_timer_heap_t dth, uint32_t tidx)

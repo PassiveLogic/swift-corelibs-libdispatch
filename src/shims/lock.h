@@ -141,6 +141,27 @@ _dispatch_lock_owner(dispatch_lock lock_value)
   return lock_value & DLOCK_OWNER_MASK;
 }
 
+#elif defined(__wasi__)
+
+typedef uint32_t dispatch_tid;
+typedef uint32_t dispatch_lock;
+
+#define DLOCK_OWNER_NULL			((dispatch_tid)0)
+#define DLOCK_OWNER_MASK			((dispatch_lock)0xfffffffc)
+#define DLOCK_WAITERS_BIT			((dispatch_lock)0x00000001)
+#define DLOCK_FAILED_TRYLOCK_BIT		((dispatch_lock)0x00000002)
+
+// tid is the constant 1 on single-threaded WASI; shift it clear of the
+// low flag bits so the owner encoding survives DLOCK_OWNER_MASK
+#define _dispatch_tid_self()			((dispatch_tid)(_dispatch_get_tsd_base()->tid << 2))
+
+DISPATCH_ALWAYS_INLINE
+static inline dispatch_tid
+_dispatch_lock_owner(dispatch_lock lock_value)
+{
+	return lock_value & DLOCK_OWNER_MASK;
+}
+
 #else
 #  error define _dispatch_lock encoding scheme for your platform here
 #endif
@@ -263,8 +284,60 @@ void _dispatch_sema4_init(_dispatch_sema4_t *sema, int policy);
 #define _dispatch_sema4_is_created(sema)   ((void)sema, 1)
 #define _dispatch_sema4_create_slow(sema, policy) ((void)sema, (void)policy)
 
+#elif defined(__wasi__)
+
+// Single-threaded WASI: a plain counter; waiters make progress by
+// cooperatively draining pending dispatch work instead of blocking
+typedef uint32_t _dispatch_sema4_t;
+#define _DSEMA4_POLICY_FIFO 0
+#define _DSEMA4_POLICY_LIFO 0
+#define _DSEMA4_TIMEOUT() ((errno) = ETIMEDOUT, -1)
+
+#define _dispatch_sema4_init(sema, policy) (void)(*(sema) = 0)
+#define _dispatch_sema4_is_created(sema)   ((void)sema, 1)
+#define _dispatch_sema4_create_slow(sema, policy) ((void)sema, (void)policy)
+
 #else
 #error "port has to implement _dispatch_sema4_t"
+#endif
+
+#if defined(__wasi__)
+// Cooperative drain support for single-threaded WASI, implemented in
+// src/event/event_wasi.c: blocking waits drain pending dispatch work and
+// timers instead of blocking the sole thread.
+//
+// Runs one pending item and returns true if it did. A due dispatch timer
+// counts as a pending item and makes this return true; otherwise the wait
+// loops below would busy-spin instead of firing it.
+bool _dispatch_wasi_drain_one(void);
+// Returns true while the cooperative drain is running a work item. Nested
+// blocking waits can never be satisfied by more work: draining is refused
+// while nested, so neither queued items nor due timers can run. Wait loops
+// must therefore crash immediately on an indefinite nested wait, and sleep
+// toward their own deadline only (never toward a timer) on a timed nested
+// wait.
+bool _dispatch_wasi_in_drain(void);
+// Returns the uptime deadline of the nearest armed dispatch timer, in the
+// _dispatch_uptime() clock domain; 0 means no timer is armed.
+uint64_t _dispatch_wasi_next_timer_ns(void);
+// Sleeps until the given _dispatch_uptime() deadline; returns immediately
+// if the deadline is already past.
+void _dispatch_wasi_sleep_until(uint64_t uptime_ns);
+// Sleeps until min(deadline_uptime_ns, nearest armed dispatch timer): a
+// plain sleep to the deadline would make timed waits sleep through timers
+// that are due earlier. Also wakes for file-descriptor readiness and pending
+// emulated signals (see _dispatch_wasi_wait_for_events).
+void _dispatch_wasi_sleep_briefly_or_until(uint64_t deadline_uptime_ns);
+// Returns true when progress can come from an event source rather than a
+// timer or queued work: an armed file-descriptor source (pollable or
+// always-ready) or an already-raised emulated signal. Armed-but-idle signal
+// sources do not count: nothing can raise() while the sole thread is parked.
+bool _dispatch_wasi_has_event_sources(void);
+// Waits until the given uptime deadline or until an armed event source
+// produces work, whichever is first; merged events queue their handlers for
+// the caller's next drain. deadline 0 waits for events alone and requires
+// _dispatch_wasi_has_event_sources() to be true.
+void _dispatch_wasi_wait_for_events(uint64_t deadline_uptime_ns);
 #endif
 
 void _dispatch_sema4_dispose_slow(_dispatch_sema4_t *sema, int policy);
