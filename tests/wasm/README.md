@@ -117,13 +117,15 @@ still needs runtime-specific readiness integration. Without a registered
 scheduler, fd and signal sources deliver only at blocking waits or inside
 `dispatch_main()`.
 
-**Wall-clock timers are anchored at arm time - a documented WASI limitation.**
-A wall-deadline timer is converted to the uptime clock when it is armed, so a
-later host wall-clock adjustment does not reposition an armed timer (Darwin
-repositions them). This is deliberate: WASI has no clock-change notification
-mechanism, so tracking adjustments reliably is not possible; anchoring gives
-one predictable behavior instead of a racy approximation. `wall-timer.c`
-pins it.
+**Wall-clock timers follow host clock changes at the next wake.** WASI has
+no clock-change notification, so the backend re-reads the wall clock whenever
+it checks for due timers or computes how long to sleep. A forward change fires
+an overdue wall timer at the next wake (queue work, a timer, an fd event, or a
+host turn); a backward change never fires a timer early. The remaining
+limitation: a change that happens while the sole thread sleeps takes effect
+when that sleep ends, while Darwin and Linux reposition the timer immediately.
+`wall-timer-forward-jump.c` and `wall-timer-backward-jump.c` pin this with a
+runner-emulated host clock change (`--wall-clock-offset`).
 
 **wasip1-threads boundary.** The cooperative backend is for plain,
 single-threaded `wasip1` only, and the build enforces that: compiling with
