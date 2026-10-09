@@ -77,6 +77,25 @@ async function runGuest(binary, guestOpts) {
       return rc;
     };
   }
+  if (guestOpts.wallClockOffset !== null) {
+    // Emulate a host wall-clock adjustment: after a delay, shift every
+    // CLOCK_REALTIME reading (clock id 0) by a fixed offset. The other
+    // clocks are untouched.
+    const preview1 = importObject.wasi_snapshot_preview1;
+    const realClockTimeGet = preview1.clock_time_get;
+    const start = performance.now();
+    const { afterMs, offsetMs } = guestOpts.wallClockOffset;
+    preview1.clock_time_get = (id, precision, timePtr) => {
+      const rc = realClockTimeGet(id, precision, timePtr);
+      if (rc === 0 && id === 0 && performance.now() - start >= afterMs) {
+        const view = new DataView(memory.buffer);
+        const time = view.getBigUint64(timePtr, true);
+        view.setBigUint64(timePtr,
+            time + BigInt(offsetMs) * 1000000n, true);
+      }
+      return rc;
+    };
+  }
   try {
     const module = await WebAssembly.compile(await readFile(binary));
     const instance = await WebAssembly.instantiate(module, importObject);
@@ -124,13 +143,25 @@ async function runChecked(...argv) {
       }
       guestFlags.push(argv[0], argv[1]);
       argv = argv.slice(2);
+    } else if (argv[0] === '--wall-clock-offset') {
+      const spec = argv[1] ?? '';
+      const colon = spec.indexOf(':');
+      const afterMs = Number(spec.slice(0, colon));
+      const offsetMs = Number(spec.slice(colon + 1));
+      if (colon < 1 || !Number.isInteger(afterMs) ||
+          !Number.isInteger(offsetMs)) {
+        console.error('bad --wall-clock-offset spec, want <ms>:<offset ms>');
+        return 2;
+      }
+      guestFlags.push(argv[0], argv[1]);
+      argv = argv.slice(2);
     } else {
       break;
     }
   }
   const [mode, binary, ...expected] = argv;
   if (!['success', 'crash'].includes(mode) || !binary || expected.length === 0) {
-    console.error('usage: run-wasi-test.mjs [--stdin-after <ms>:<text>] [--deny-fd-poll] [--suppress-poll-hangup] [--fd-poll-ebadf-after <n>] [--preopen <guest>:<host>] <success|crash> <binary> <expected text>...');
+    console.error('usage: run-wasi-test.mjs [--stdin-after <ms>:<text>] [--deny-fd-poll] [--suppress-poll-hangup] [--fd-poll-ebadf-after <n>] [--preopen <guest>:<host>] [--wall-clock-offset <ms>:<offset ms>] <success|crash> <binary> <expected text>...');
     return 2;
   }
 
@@ -187,6 +218,7 @@ if (process.argv[2] === '--guest') {
     denyFdPoll: false,
     suppressPollHangup: false,
     fdPollEbadfAfter: null,
+    wallClockOffset: null,
     preopens: {},
   };
   let i = 3;
@@ -202,6 +234,14 @@ if (process.argv[2] === '--guest') {
       const spec = process.argv[i + 1];
       const colon = spec.indexOf(':');
       guestOpts.preopens[spec.slice(0, colon)] = spec.slice(colon + 1);
+      i++;
+    } else if (process.argv[i] === '--wall-clock-offset') {
+      const spec = process.argv[i + 1];
+      const colon = spec.indexOf(':');
+      guestOpts.wallClockOffset = {
+        afterMs: Number(spec.slice(0, colon)),
+        offsetMs: Number(spec.slice(colon + 1)),
+      };
       i++;
     } else {
       break;
