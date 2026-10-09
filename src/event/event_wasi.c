@@ -62,7 +62,7 @@
 // due and fire it (see _dispatch_wasi_drain_one).
 
 struct _dispatch_wasi_timeout_s {
-	uint64_t dwt_deadline; // in the _dispatch_uptime() clock domain
+	uint64_t dwt_deadline; // in the timer's own clock domain
 	bool dwt_armed;
 };
 
@@ -704,11 +704,8 @@ _dispatch_event_loop_timer_arm(dispatch_timer_heap_t dth DISPATCH_UNUSED,
 {
 	dispatch_clock_t clock = DISPATCH_TIMER_CLOCK(tidx);
 
-	// range.delay is relative to "now" in the timer's own clock domain; all
-	// clocks advance in nanoseconds, so anchoring the deadline on the uptime
-	// clock keeps a single sleepable domain for _dispatch_wasi_next_timer_ns()
 	_dispatch_wasi_timeout[clock].dwt_deadline = range.delay +
-			_dispatch_time_now_cached(DISPATCH_CLOCK_UPTIME, nows);
+			_dispatch_time_now_cached(clock, nows);
 	_dispatch_wasi_timeout[clock].dwt_armed = true;
 }
 
@@ -722,10 +719,15 @@ _dispatch_event_loop_timer_delete(dispatch_timer_heap_t dth DISPATCH_UNUSED,
 uint64_t
 _dispatch_wasi_next_timer_ns(void)
 {
+	uint64_t uptime = _dispatch_uptime();
 	uint64_t next = 0;
 	for (size_t i = 0; i < countof(_dispatch_wasi_timeout); i++) {
 		if (!_dispatch_wasi_timeout[i].dwt_armed) continue;
 		uint64_t deadline = _dispatch_wasi_timeout[i].dwt_deadline;
+		if (i != DISPATCH_CLOCK_UPTIME) {
+			uint64_t now = _dispatch_time_now((dispatch_clock_t)i);
+			deadline = uptime + (deadline > now ? deadline - now : 0);
+		}
 		if (!next || deadline < next) next = deadline;
 	}
 	return next;
@@ -735,11 +737,11 @@ DISPATCH_ALWAYS_INLINE
 static inline bool
 _dispatch_wasi_merge_due_timers(void)
 {
-	uint64_t now = _dispatch_uptime();
 	bool fired = false;
 	for (size_t i = 0; i < countof(_dispatch_wasi_timeout); i++) {
 		if (_dispatch_wasi_timeout[i].dwt_armed &&
-				_dispatch_wasi_timeout[i].dwt_deadline <= now) {
+				_dispatch_wasi_timeout[i].dwt_deadline <=
+						_dispatch_time_now((dispatch_clock_t)i)) {
 			_dispatch_event_merge_timer((dispatch_clock_t)i);
 			fired = true;
 		}

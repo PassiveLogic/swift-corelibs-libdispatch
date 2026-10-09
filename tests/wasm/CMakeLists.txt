@@ -213,6 +213,33 @@ set_tests_properties(dispatch_wasi_read_source dispatch_wasi_fd_wakeup_wait
   dispatch_wasi_pipe_eof_spin_crash dispatch_wasi_fd_poll_denied
   dispatch_wasi_fd_closed_while_armed
   PROPERTIES TIMEOUT 10)
+# walltime deadlines follow host wall-clock changes at the next wake; the
+# runner shifts CLOCK_REALTIME after a delay (--wall-clock-offset)
+foreach(_wall_test forward backward)
+  add_executable(dispatch_wasi_wall_timer_${_wall_test}_jump
+    wall-timer-${_wall_test}-jump.c)
+  target_compile_options(dispatch_wasi_wall_timer_${_wall_test}_jump
+    PRIVATE -fblocks -Wall)
+  target_link_libraries(dispatch_wasi_wall_timer_${_wall_test}_jump
+    PRIVATE dispatch)
+  target_link_options(dispatch_wasi_wall_timer_${_wall_test}_jump PRIVATE
+    -nodefaultlibs
+    -lc
+    "${DISPATCH_WASI_BUILTINS}")
+endforeach()
+add_test(NAME dispatch_wasi_wall_timer_forward_jump
+  COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
+    --wall-clock-offset "300:60000" success
+    "$<TARGET_FILE:dispatch_wasi_wall_timer_forward_jump>"
+    "wall timer followed the forward clock change")
+add_test(NAME dispatch_wasi_wall_timer_backward_jump
+  COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
+    --wall-clock-offset "100:-60000" success
+    "$<TARGET_FILE:dispatch_wasi_wall_timer_backward_jump>"
+    "wall timer followed the backward clock change")
+set_tests_properties(dispatch_wasi_wall_timer_forward_jump
+  dispatch_wasi_wall_timer_backward_jump PROPERTIES TIMEOUT 10)
+
 # runner robustness: the guest exits long before the delayed stdin write
 # lands; the runner must still report the guest's own result rather than
 # dying on EPIPE from the orphaned write
@@ -314,6 +341,8 @@ if(NOT DISPATCH_WASI_NODE_OK)
     dispatch_wasi_pipe_eof_spin_crash
     dispatch_wasi_fd_poll_denied
     dispatch_wasi_fd_closed_while_armed
+    dispatch_wasi_wall_timer_forward_jump
+    dispatch_wasi_wall_timer_backward_jump
     dispatch_wasi_runner_early_exit
     dispatch_wasi_clean_c_consumer
     dispatch_wasi_runner_wrong_mode
