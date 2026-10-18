@@ -54,8 +54,10 @@
 // One drain step runs, in priority order: due timers (they unblock waits
 // and re-fill the queues), then the manager queue (it arms timers and
 // finishes source setup), then the thread-bound main queue, then one pending
-// root item. A new root scan starts at the highest QoS, then rotates among
-// roots that remain pending so one queue cannot hold the sole thread. When
+// root item. The main queue and the roots take turns: after a main step, a
+// pending root runs before the next main step. A new root scan starts at the
+// highest QoS, then rotates among roots that remain pending so one queue
+// cannot hold the sole thread. When
 // the root item is a queue, the step runs one of its items. The queue then
 // takes the narrowing exit in queue.c and goes back on its root queue, so a
 // queue that refills itself cannot hold the sole thread either.
@@ -75,6 +77,10 @@ static bool _dispatch_wasi_root_pending[DISPATCH_ROOT_QUEUE_COUNT];
 static size_t _dispatch_wasi_next_root = DISPATCH_ROOT_QUEUE_COUNT - 1;
 static bool _dispatch_wasi_main_pending;
 static bool _dispatch_wasi_mgr_pending;
+// True after a main-queue step, false after a root step. While it is true
+// and a root is pending, the next step runs a root instead of the main
+// queue.
+static bool _dispatch_wasi_main_ran_last;
 static bool _dispatch_wasi_draining;
 // While the poll harvest walks the muxnote list, and while a drain step
 // runs, pokes only record pending work. They do not request a host turn.
@@ -106,13 +112,20 @@ _dispatch_wasi_schedule_host_turn(void)
 
 DISPATCH_ALWAYS_INLINE
 static inline bool
-_dispatch_wasi_work_pending(void)
+_dispatch_wasi_root_work_pending(void)
 {
-	if (_dispatch_wasi_mgr_pending || _dispatch_wasi_main_pending) return true;
 	for (size_t i = 0; i < countof(_dispatch_wasi_root_pending); i++) {
 		if (_dispatch_wasi_root_pending[i]) return true;
 	}
 	return false;
+}
+
+DISPATCH_ALWAYS_INLINE
+static inline bool
+_dispatch_wasi_work_pending(void)
+{
+	return _dispatch_wasi_mgr_pending || _dispatch_wasi_main_pending ||
+			_dispatch_wasi_root_work_pending();
 }
 
 // Pending queue work, a dirty timer heap, or a timer that is already due:
@@ -848,8 +861,13 @@ _dispatch_wasi_drain_step(bool include_main)
 	} else if (_dispatch_wasi_mgr_pending) {
 		_dispatch_wasi_mgr_pending = false;
 		_dispatch_wasi_mgr_queue_drain();
-	} else if (include_main && _dispatch_wasi_main_pending) {
+	} else if (include_main && _dispatch_wasi_main_pending &&
+			!(_dispatch_wasi_main_ran_last &&
+			_dispatch_wasi_root_work_pending())) {
+		// Main and the roots take turns, so main work that re-posts itself
+		// cannot starve the roots.
 		_dispatch_wasi_main_pending = false;
+		_dispatch_wasi_main_ran_last = true;
 		_dispatch_wasi_main_queue_drain();
 	} else {
 		did_work = false;
@@ -868,6 +886,7 @@ _dispatch_wasi_drain_step(bool include_main)
 						_dispatch_wasi_root_pending[j];
 			}
 			_dispatch_wasi_root_pending[i] = false;
+			_dispatch_wasi_main_ran_last = false;
 			_dispatch_wasi_root_queue_drain(&_dispatch_root_queues[i]);
 			bool keep_rotating = roots_were_waiting ||
 					_dispatch_wasi_root_pending[i];

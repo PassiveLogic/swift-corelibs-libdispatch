@@ -63,6 +63,10 @@ add_wasi_test(dispatch_wasi_barrier_order barrier-order.c success "barrier order
 add_wasi_test(dispatch_wasi_qos_order qos-order.c success "qos order OK" 5)
 add_wasi_test(dispatch_wasi_root_fairness root-fairness.c success
   "root fairness OK" 5)
+add_wasi_test(dispatch_wasi_main_root_fairness main-root-fairness.c success
+  "main root fairness OK" 5)
+add_wasi_test(dispatch_wasi_main_root_fairness_perform
+  main-root-fairness-perform.c success "main root fairness perform OK" 5)
 add_wasi_test(dispatch_wasi_serial_lane_fairness serial-lane-fairness.c success
   "serial lane fairness OK" 5)
 add_wasi_test(dispatch_wasi_serial_lane_wait serial-lane-wait.c success
