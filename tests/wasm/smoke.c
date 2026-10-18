@@ -134,6 +134,10 @@ test_group(void)
 	dispatch_group_notify(group, queue, ^{ notified++; });
 	dispatch_async(queue, ^{ dispatch_group_leave(group); });
 	CHECK(dispatch_group_wait(group, DISPATCH_TIME_FOREVER) == 0);
+	// The wait returns once the group is empty. The notify block is queued
+	// before the waiter wakes, but it can still be pending, as on threaded
+	// platforms. A sync on its queue runs after it.
+	dispatch_sync(queue, ^{});
 	CHECK(notified == 1);
 	dispatch_release(group);
 	dispatch_release(queue);

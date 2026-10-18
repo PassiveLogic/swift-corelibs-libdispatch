@@ -35,6 +35,9 @@ int host_event_loop_perform_timer(void);
 int64_t host_event_loop_next_timer_delay(void);
 int host_event_loop_immediate_count(void);
 int host_event_loop_result(void);
+int host_event_loop_submit_serial_lane(void);
+int host_event_loop_serial_lane_count(void);
+int host_event_loop_serial_lane_low_seen_at(void);
 
 __attribute__((import_module("dispatch_host"), import_name("schedule")))
 extern void host_schedule(void);
@@ -161,4 +164,54 @@ host_event_loop_result(void)
 		return -1;
 	}
 	return immediate_count * 100 + timer_count * 10 + second_burst_count;
+}
+
+// A serial queue that re-posts to itself SERIAL_LANE_ITEMS times, plus one
+// LOW global item. The runner checks that each perform(1) advances the lane
+// by at most one item and that the LOW item runs while the lane is busy.
+#define SERIAL_LANE_ITEMS 100
+
+static dispatch_queue_t serial_lane;
+static int serial_lane_count;
+static int serial_lane_low_seen_at = -1;
+
+static void
+serial_lane_item(void *context)
+{
+	(void)context;
+	if (++serial_lane_count < SERIAL_LANE_ITEMS) {
+		dispatch_async_f(serial_lane, NULL, serial_lane_item);
+	}
+}
+
+static void
+serial_lane_low_item(void *context)
+{
+	(void)context;
+	serial_lane_low_seen_at = serial_lane_count;
+}
+
+__attribute__((export_name("host_event_loop_submit_serial_lane")))
+int
+host_event_loop_submit_serial_lane(void)
+{
+	serial_lane = dispatch_queue_create("host-serial-lane", NULL);
+	dispatch_async_f(serial_lane, NULL, serial_lane_item);
+	dispatch_async_f(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0),
+			NULL, serial_lane_low_item);
+	return serial_lane_count;
+}
+
+__attribute__((export_name("host_event_loop_serial_lane_count")))
+int
+host_event_loop_serial_lane_count(void)
+{
+	return serial_lane_count;
+}
+
+__attribute__((export_name("host_event_loop_serial_lane_low_seen_at")))
+int
+host_event_loop_serial_lane_low_seen_at(void)
+{
+	return serial_lane_low_seen_at;
 }

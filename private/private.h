@@ -176,7 +176,9 @@ void _dispatch_wasi_event_loop_set_scheduler(
 
 /*
  * Runs at most max_steps drain phases. A manager or main-queue phase may drain
- * a captured queue snapshot. consumes_scheduled_turn must be true only when
+ * a captured queue snapshot. A root-queue phase runs one work item; when that
+ * item is a queue, the phase runs one of its items and re-enqueues the queue.
+ * consumes_scheduled_turn must be true only when
  * the registered scheduler's callback caused this call. A true result means
  * more work remains and a scheduler callback is already outstanding.
  */

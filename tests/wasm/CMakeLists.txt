@@ -63,6 +63,10 @@ add_wasi_test(dispatch_wasi_barrier_order barrier-order.c success "barrier order
 add_wasi_test(dispatch_wasi_qos_order qos-order.c success "qos order OK" 5)
 add_wasi_test(dispatch_wasi_root_fairness root-fairness.c success
   "root fairness OK" 5)
+add_wasi_test(dispatch_wasi_serial_lane_fairness serial-lane-fairness.c success
+  "serial lane fairness OK" 5)
+add_wasi_test(dispatch_wasi_serial_lane_wait serial-lane-wait.c success
+  "serial lane wait OK" 5)
 add_wasi_test(dispatch_wasi_wall_timer wall-timer.c success "wall timer OK" 5)
 add_wasi_test(dispatch_wasi_sync_inline sync-inline.c success "sync inline OK" 5)
 add_wasi_test(dispatch_wasi_main_queue_order main-queue-order.c success
@@ -113,11 +117,16 @@ add_test(NAME dispatch_wasi_host_event_loop_timer_race
   COMMAND "${NODE_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-host-event-loop-test.mjs"
     --timer-race "$<TARGET_FILE:dispatch_wasi_host_event_loop>")
+add_test(NAME dispatch_wasi_host_event_loop_serial_lane
+  COMMAND "${NODE_EXECUTABLE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-host-event-loop-test.mjs"
+    --serial-lane "$<TARGET_FILE:dispatch_wasi_host_event_loop>")
 set_tests_properties(dispatch_wasi_host_event_loop
   dispatch_wasi_host_event_loop_inline
   dispatch_wasi_host_event_loop_late_registration
   dispatch_wasi_host_event_loop_register_in_drain
-  dispatch_wasi_host_event_loop_timer_race PROPERTIES TIMEOUT 10)
+  dispatch_wasi_host_event_loop_timer_race
+  dispatch_wasi_host_event_loop_serial_lane PROPERTIES TIMEOUT 10)
 if(NOT DISPATCH_WASI_NODE_OK)
   set_tests_properties(dispatch_wasi_host_event_loop
     dispatch_wasi_host_event_loop_inline

@@ -55,7 +55,10 @@
 // and re-fill the queues), then the manager queue (it arms timers and
 // finishes source setup), then the thread-bound main queue, then one pending
 // root item. A new root scan starts at the highest QoS, then rotates among
-// roots that remain pending so one queue cannot hold the sole thread.
+// roots that remain pending so one queue cannot hold the sole thread. When
+// the root item is a queue, the step runs one of its items. The queue then
+// takes the narrowing exit in queue.c and goes back on its root queue, so a
+// queue that refills itself cannot hold the sole thread either.
 //
 // Timers keep their generic heap; this backend only tracks the nearest
 // armed deadline per clock so that idle waits can sleep until a timer is

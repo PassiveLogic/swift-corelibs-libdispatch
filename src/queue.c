@@ -3563,6 +3563,20 @@ _dispatch_queue_drain_should_narrow(dispatch_invoke_context_t dic)
 	}
 	return false;
 }
+#elif defined(__wasi__)
+// WASI has no workqueue to narrow, but the sole thread must not stay in one
+// lane drain. A lane that refills itself would otherwise starve timers, the
+// manager queue, the main queue, other roots, a waiting pump, and the host
+// loop. A WASI root step therefore starts narrowed: a lane drain runs one
+// item, then takes the narrowing exit when more items remain. The exit
+// re-enqueues the lane on its target queue. A drain that does not start
+// from a root step (manager queue, main queue) has a zeroed context, and
+// dispatch_with_disabled_narrowing() zeroes it. Those drains run to the end.
+#define _dispatch_queue_drain_init_narrowing_check_deadline(dic, pri) \
+		((void)(pri), \
+		(dic)->dic_next_narrow_check = DISPATCH_THREAD_IS_NARROWING)
+#define _dispatch_queue_drain_should_narrow(dic) \
+		((dic)->dic_next_narrow_check != 0)
 #else
 #define _dispatch_queue_drain_init_narrowing_check_deadline(rq, dic) ((void)0)
 #define _dispatch_queue_drain_should_narrow(dic)  false
@@ -6224,6 +6238,8 @@ _dispatch_wasi_root_queue_drain(dispatch_queue_global_t dq)
 {
 	// Cooperative stand-in for one worker turn. Limit the turn to one root
 	// item so event_wasi.c can rotate among pending roots between turns.
+	// The turn starts narrowed: when the root item is a lane, the lane runs
+	// one of its items and re-enqueues itself if more remain.
 	dispatch_queue_t old_dq = _dispatch_queue_get_current();
 	_dispatch_queue_set_current(NULL);
 	int pending = os_atomic_dec2o(dq, dgq_pending, relaxed);
@@ -6236,6 +6252,7 @@ _dispatch_wasi_root_queue_drain(dispatch_queue_global_t dq)
 	_dispatch_adopt_wlh_anon();
 
 	dispatch_invoke_context_s dic = { };
+	_dispatch_queue_drain_init_narrowing_check_deadline(&dic, pri);
 	_dispatch_perfmon_start();
 	struct dispatch_object_s *item = _dispatch_root_queue_drain_one(dq);
 	if (item) {
