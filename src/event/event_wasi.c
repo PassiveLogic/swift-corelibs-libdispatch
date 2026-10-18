@@ -821,8 +821,8 @@ _dispatch_wasi_sleep_briefly_or_until(uint64_t deadline_uptime_ns)
 
 #pragma mark cooperative drain
 
-bool
-_dispatch_wasi_drain_one(void)
+static bool
+_dispatch_wasi_drain_step(bool include_main)
 {
 	if (_dispatch_wasi_draining) {
 		// no nested drains: the queue state machinery (thread frames, wlh,
@@ -841,7 +841,7 @@ _dispatch_wasi_drain_one(void)
 	} else if (_dispatch_wasi_mgr_pending) {
 		_dispatch_wasi_mgr_pending = false;
 		_dispatch_wasi_mgr_queue_drain();
-	} else if (_dispatch_wasi_main_pending) {
+	} else if (include_main && _dispatch_wasi_main_pending) {
 		_dispatch_wasi_main_pending = false;
 		_dispatch_wasi_main_queue_drain();
 	} else {
@@ -875,10 +875,25 @@ _dispatch_wasi_drain_one(void)
 	return did_work;
 }
 
+// The step of the blocking-wait loops in shims/lock.c. It leaves the main
+// queue pending: a top-level wait is main-thread code. A registered host
+// scheduler gets that work in a later turn (see _dispatch_wasi_hand_off_pending).
+bool
+_dispatch_wasi_drain_one(void)
+{
+	return _dispatch_wasi_drain_step(false);
+}
+
+bool
+_dispatch_wasi_main_queue_pending(void)
+{
+	return _dispatch_wasi_main_pending;
+}
+
 void
 _dispatch_wasi_drain(void)
 {
-	while (_dispatch_wasi_drain_one()) {
+	while (_dispatch_wasi_drain_step(true)) {
 	}
 }
 
@@ -919,7 +934,7 @@ _dispatch_wasi_event_loop_perform(unsigned long max_steps,
 	_dispatch_wasi_performing = true;
 	_dispatch_wasi_poll_harvest(0);
 	for (unsigned long step = 0; step < max_steps; step++) {
-		if (!_dispatch_wasi_drain_one()) break;
+		if (!_dispatch_wasi_drain_step(true)) break;
 	}
 	_dispatch_wasi_performing = false;
 	bool more_work = _dispatch_wasi_has_runnable_work();

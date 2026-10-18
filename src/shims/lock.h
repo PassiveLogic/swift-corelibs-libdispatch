@@ -306,10 +306,23 @@ typedef uint32_t _dispatch_sema4_t;
 // src/event/event_wasi.c: blocking waits drain pending dispatch work and
 // timers instead of blocking the sole thread.
 //
-// Runs one pending item and returns true if it did. A due dispatch timer
-// counts as a pending item and makes this return true; otherwise the wait
-// loops below would busy-spin instead of firing it.
+// Runs one drain step for a blocking-wait loop and returns true if the step
+// did work. A step is one of: a merge of due timers, one manager queue drain,
+// or one item from a global root queue. A due dispatch timer counts as work
+// and makes this return true; otherwise the wait loops below would busy-spin
+// instead of firing it.
+//
+// The step never drains the thread-bound main queue. As on Darwin and Linux,
+// main-queue work does not run while main-thread code is blocked in a wait.
+// Only dispatch_main() and a host event loop turn drain the main queue.
+//
+// One step can run more than one client block: a root item that is a serial
+// queue runs a drain of that queue. A timed wait can therefore return late
+// by the run time of one step.
 bool _dispatch_wasi_drain_one(void);
+// Returns true while main-queue work is pending. A blocking wait cannot run
+// that work, so the wait loops use this to name the deadlock.
+bool _dispatch_wasi_main_queue_pending(void);
 // Returns true while the cooperative drain is running a work item. Nested
 // blocking waits can never be satisfied by more work: draining is refused
 // while nested, so neither queued items nor due timers can run. Wait loops

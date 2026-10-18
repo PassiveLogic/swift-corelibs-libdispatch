@@ -400,6 +400,7 @@ typedef enum {
 	_dispatch_wasi_park_ok,
 	_dispatch_wasi_park_nested,	// indefinite wait from inside a drain
 	_dispatch_wasi_park_stuck,	// nothing can ever produce progress
+	_dispatch_wasi_park_main_only,	// only main-queue work is pending
 } _dispatch_wasi_park_result_t;
 
 DISPATCH_NOINLINE
@@ -414,7 +415,9 @@ _dispatch_wasi_wait_park(uint64_t nsec)
 		}
 		uint64_t deadline = _dispatch_wasi_next_timer_ns();
 		if (!deadline && !_dispatch_wasi_has_event_sources()) {
-			return _dispatch_wasi_park_stuck;
+			// waits never drain the main queue (see shims/lock.h)
+			return _dispatch_wasi_main_queue_pending() ?
+					_dispatch_wasi_park_main_only : _dispatch_wasi_park_stuck;
 		}
 		// an armed timer, an armed fd source, or a pending emulated signal
 		// can still produce the work that satisfies this wait
@@ -443,6 +446,9 @@ _dispatch_sema4_wait(_dispatch_sema4_t *sema)
 			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
 					"semaphore wait with no runnable work, timers, or "
 					"event sources");
+		case _dispatch_wasi_park_main_only:
+			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
+					"semaphore wait with only main-queue work pending");
 		}
 	}
 }
@@ -463,6 +469,7 @@ _dispatch_sema4_timedwait(_dispatch_sema4_t *sema, dispatch_time_t timeout)
 					"semaphore timedwait from within a drained "
 					"work item");
 		case _dispatch_wasi_park_stuck:
+		case _dispatch_wasi_park_main_only:
 			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
 					"semaphore timedwait with no runnable work, "
 					"timers, or event sources");
@@ -696,8 +703,10 @@ _dispatch_wait_on_address(uint32_t volatile *_address, uint32_t value,
 #elif defined(__wasi__)
 	(void)flags;
 	while (os_atomic_load(address, relaxed) == value) {
-		// re-check the deadline before draining so that a continuous stream
-		// of runnable work cannot make a timed wait overshoot it
+		// Re-check the deadline before each drain step. A continuous stream
+		// of runnable work then cannot hold a timed wait past its deadline:
+		// the wait returns late by at most the run time of one step (see
+		// _dispatch_wasi_drain_one in shims/lock.h).
 		if (nsecs != DISPATCH_TIME_FOREVER &&
 				(nsecs = _dispatch_timeout(timeout)) == 0) {
 			return ETIMEDOUT;
@@ -714,6 +723,10 @@ _dispatch_wait_on_address(uint32_t volatile *_address, uint32_t value,
 			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
 					"_dispatch_wait_on_address() with no runnable work, "
 					"timers, or event sources");
+		case _dispatch_wasi_park_main_only:
+			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
+					"_dispatch_wait_on_address() with only main-queue "
+					"work pending");
 		}
 	}
 	return 0;

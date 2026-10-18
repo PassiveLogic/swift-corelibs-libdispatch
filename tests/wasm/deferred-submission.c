@@ -25,13 +25,14 @@
  * dispatch_main() or a registered host turn elsewhere). This is the contract
  * threaded platforms give too. The pump runs pending work in category
  * priority order (due timers, the manager queue, the main queue, then root
- * queues by QoS) and in FIFO order within one queue:
+ * queues by QoS) and in FIFO order within one queue. A blocking wait skips
+ * the main queue:
  *
  *  1. At top level, a submitted block has not run when dispatch_async
  *     returns. It runs at the next blocking wait.
  *  2. Blocks submitted from inside a running work item run in the outer
- *     drain in category priority order, so a main-queue item submitted after
- *     a root-queue item still runs first.
+ *     drain. A blocking wait never drains the main queue, so a main-queue
+ *     item submitted there runs later, in dispatch_main().
  *  3. A group notify installed while the group is still busy runs after the
  *     root-queue items that were already queued, in FIFO order.
  */
@@ -82,16 +83,21 @@ main(void)
 		exit(1);
 	}
 
-	// 2. nested submissions run in the outer drain in category priority
-	//    order (main queue before root queues), not submission order
+	// 2. nested submissions run in the outer drain; the main-queue item
+	//    does not run at the top-level wait
+	__block int main_ran = 0;
 	dispatch_async(gq, ^{
 		push('A');
 		dispatch_async(gq, ^{ push('G'); });
-		dispatch_async(dispatch_get_main_queue(), ^{ push('M'); });
+		dispatch_async(dispatch_get_main_queue(), ^{ main_ran = 1; });
 		dispatch_async(gq, ^{ dispatch_semaphore_signal(sem); });
 	});
 	dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
-	expect("AMG", "nested submissions drain main-before-root");
+	expect("AG", "nested submissions drain in the outer wait");
+	if (main_ran) {
+		printf("FAIL: main-queue item ran inside a top-level wait\n");
+		exit(1);
+	}
 
 	// 3. the group is still busy when the notify is installed, so the notify
 	//    queues behind the root item submitted after it (FIFO)
@@ -105,6 +111,14 @@ main(void)
 	dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
 	expect("WPN", "group notify follows earlier root submissions");
 
-	printf("deferred submission OK\n");
-	return 0;
+	// the main-queue item from step 2 runs first in dispatch_main()
+	dispatch_async(dispatch_get_main_queue(), ^{
+		if (!main_ran) {
+			printf("FAIL: main-queue item did not run in dispatch_main()\n");
+			exit(1);
+		}
+		printf("deferred submission OK\n");
+		exit(0);
+	});
+	dispatch_main();
 }
