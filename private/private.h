@@ -160,6 +160,17 @@ void _dispatch_prohibit_transition_to_multithreaded(bool prohibit);
 
 #if defined(__wasi__)
 /*
+ * Command modules need no scheduler. dispatch_main() is the drain loop: it
+ * drains all queues on the calling thread, then parks in the host until the
+ * next armed timer or pollable fd source. When no work, no timer, and no
+ * pollable fd source remain, it crashes with a named diagnostic. As on every
+ * platform, dispatch_main() never returns. A command module calls exit()
+ * from its last block to end. exit() then runs atexit handlers inside that
+ * drained block, so an indefinite Dispatch wait there crashes. Flush before
+ * exit.
+ */
+
+/*
  * SPI for single-threaded hosts that drive Dispatch from their own event loop.
  *
  * Dispatch calls the scheduler when it records new work. The scheduler must

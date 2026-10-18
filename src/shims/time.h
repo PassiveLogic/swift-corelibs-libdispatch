@@ -134,6 +134,14 @@ _dispatch_get_nanoseconds(void)
  *
  * Using the CLOCK_MONOTONIC family on POSIX-compliant platforms
  * will lead to bugs, hence its use is restricted to Linux.
+ *
+ * WASI is an exception. wasi-libc defines only CLOCK_REALTIME and
+ * CLOCK_MONOTONIC. It has no CLOCK_UPTIME or CLOCK_BOOTTIME. The WASI
+ * clock API does not say if CLOCK_MONOTONIC ticks during machine
+ * sleep, so the host decides. On WASI, _dispatch_uptime() and
+ * _dispatch_monotonic_time() both read CLOCK_MONOTONIC, so
+ * DISPATCH_CLOCK_UPTIME and DISPATCH_CLOCK_MONOTONIC are the same
+ * clock.
  */
 
 static inline uint64_t

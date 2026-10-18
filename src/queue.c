@@ -6374,7 +6374,7 @@ _dispatch_worker_thread(void *context)
 		pqc->dpq_thread_configure();
 	}
 
-#if !defined(_WIN32) && !defined(__wasi__)
+#if !defined(_WIN32)
 	// workaround tweaks the kernel workqueue does for us
 	_dispatch_sigmask();
 #endif
@@ -7339,6 +7339,13 @@ dispatch_main(void)
 	// pending emulated signals) park the loop in a host wait; when the
 	// process is fully idle with none of those, waiting would hang forever:
 	// crash loudly instead.
+	// This loop never returns, so a program ends with exit() from a work
+	// item. exit() then runs atexit handlers and static destructors inside
+	// that drained item. A Dispatch wait there is a nested wait (see
+	// _dispatch_wasi_in_drain() in shims/lock.h): an indefinite wait
+	// crashes, and a timed wait times out without running queued work.
+	// Flush before exit, for example with
+	// dispatch_group_notify(g, q, ^{ exit(0); }).
 	// A call from inside a drained work item can never make progress: drains
 	// do not nest, so neither queued work nor due timers could run beneath
 	// it. Crash at once, like the nested waits in shims/lock.c.

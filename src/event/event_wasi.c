@@ -51,16 +51,20 @@
 // loop calls perform after it registered a scheduler callback (see
 // private/private.h). A poke outside any drain asks that scheduler for one
 // host turn.
-// One drain step runs, in priority order: due timers (they unblock waits
-// and re-fill the queues), then the manager queue (it arms timers and
-// finishes source setup), then the thread-bound main queue, then one pending
-// root item. The main queue and the roots take turns: after a main step, a
-// pending root runs before the next main step. A new root scan starts at the
-// highest QoS, then rotates among roots that remain pending so one queue
-// cannot hold the sole thread. When
-// the root item is a queue, the step runs one of its items. The queue then
-// takes the narrowing exit in queue.c and goes back on its root queue, so a
-// queue that refills itself cannot hold the sole thread either.
+// A drain step is one call of _dispatch_wasi_drain_one. One step runs one
+// phase: the first phase that has work, in this priority order:
+//  1. due timers (they unblock waits and re-fill the queues)
+//  2. the manager queue (it arms timers and finishes source setup)
+//  3. the thread-bound main queue (only in dispatch_main() and a host turn,
+//     never in a blocking wait)
+//  4. one item from a pending root queue
+// The main queue and the roots take turns: after a main step, a pending
+// root runs before the next main step. A new root scan starts at the
+// highest QoS, then rotates among roots that remain pending. A manager or
+// main-queue phase drains a captured snapshot. A serial queue in a root or
+// main-queue phase runs one item, then takes the narrowing exit in queue.c
+// and goes back on its target queue, so a queue that refills itself cannot
+// hold the sole thread.
 //
 // Timers keep their generic heap; this backend only tracks the nearest
 // armed deadline per clock so that idle waits can sleep until a timer is
@@ -885,7 +889,7 @@ _dispatch_wasi_drain_step(bool include_main)
 	bool did_work = true;
 	if (_dispatch_wasi_merge_due_timers() ||
 			_dispatch_timers_heap[0].dth_dirty_bits) {
-		// a due timer counts as a pending item (see shims/lock.h): firing it
+		// a due timer counts as work for this step (see shims/lock.h): firing it
 		// pushes the timer source's handler onto its target queue
 		_dispatch_event_loop_drain_timers(_dispatch_timers_heap,
 				DISPATCH_TIMER_COUNT);
