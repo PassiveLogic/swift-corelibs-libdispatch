@@ -7272,9 +7272,15 @@ _dispatch_main_queue_wakeup(dispatch_queue_main_t dq, dispatch_qos_t qos,
 	if (_dispatch_queue_is_thread_bound(dq)) {
 		// nothing else can run the thread-bound main queue on
 		// single-threaded WASI: note it for the cooperative drain, after
-		// letting the lane wakeup do the regular dq_state maintenance
+		// letting the lane wakeup do the regular dq_state maintenance.
+		// Poke only when items are queued, like
+		// _dispatch_runloop_queue_wakeup: the main queue drain ends with a
+		// wakeup that adds no item.
 		_dispatch_lane_wakeup(dq, qos, flags);
-		return _dispatch_wasi_main_queue_poke();
+		if (_dispatch_queue_class_probe(dq)) {
+			_dispatch_wasi_main_queue_poke();
+		}
+		return;
 	}
 #endif
 	return _dispatch_lane_wakeup(dq, qos, flags);

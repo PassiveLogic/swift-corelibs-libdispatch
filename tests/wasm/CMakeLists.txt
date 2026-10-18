@@ -102,6 +102,8 @@ add_wasi_test(dispatch_wasi_pumped_held_queue_sync pumped-held-queue-sync.c
 add_wasi_test(dispatch_wasi_pumped_once_reenter pumped-once-reenter.c crash
   "lock contended with no other thread to release it" 5
   "pumped item enters the same dispatch_once")
+add_wasi_test(dispatch_wasi_main_queue_perform main-queue-perform.c success
+  "main queue perform OK" 5)
 add_wasi_test(dispatch_wasi_async_and_wait_pump async-and-wait-pump.c success
   "async and wait pump OK" 5)
 add_wasi_test(dispatch_wasi_nested_dispatch_main nested-dispatch-main.c crash
@@ -383,3 +385,15 @@ if(NOT DISPATCH_WASI_NODE_OK)
   endif()
   set_tests_properties(${_wasi_explicit_tests} PROPERTIES DISABLED TRUE)
 endif()
+
+foreach(_mode 0 1 2 3 4)
+  add_wasi_test(dispatch_wasi_scheduler_pump_${_mode} scheduler-pump.c crash
+    "WASI event loop scheduler drained Dispatch inline" 5
+    "scheduler callback entered")
+  target_compile_definitions(dispatch_wasi_scheduler_pump_${_mode} PRIVATE
+    SCHEDULER_PUMP_MODE=${_mode})
+endforeach()
+add_wasi_test(dispatch_wasi_scheduler_no_pump scheduler-pump.c success
+  "scheduler non-pumping calls OK" 5 "scheduler callback entered")
+target_compile_definitions(dispatch_wasi_scheduler_no_pump PRIVATE
+  SCHEDULER_PUMP_MODE=5)

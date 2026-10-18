@@ -99,6 +99,10 @@ static void *_dispatch_wasi_host_context;
 static bool _dispatch_wasi_host_turn_scheduled;
 static bool _dispatch_wasi_host_schedule_in_progress;
 static bool _dispatch_wasi_performing;
+// Set at registration when a timer is already armed. The host reads timer
+// deadlines only after a perform, so that timer needs one host turn even
+// when no work can run yet. The next perform clears it.
+static bool _dispatch_wasi_armed_timer_unseen;
 
 static void
 _dispatch_wasi_schedule_host_turn(void)
@@ -156,13 +160,16 @@ _dispatch_wasi_note_pending(void)
 
 // Pump boundary: a drain step or a harvest ended outside perform. Runnable
 // work left behind by a pump that stops (a satisfied or timed-out wait) goes
-// to the host. The cheap checks run first: no scheduler, or a turn already
-// outstanding, means no scan and no clock read.
+// to the host, and so does a timer armed before registration. The cheap
+// checks run first: no scheduler, or a turn already outstanding, means no
+// scan and no clock read.
 static void
 _dispatch_wasi_hand_off_pending(void)
 {
 	if (_dispatch_wasi_host_schedule && !_dispatch_wasi_host_turn_scheduled &&
-			!_dispatch_wasi_performing && _dispatch_wasi_has_runnable_work()) {
+			!_dispatch_wasi_performing &&
+			(_dispatch_wasi_armed_timer_unseen ||
+			_dispatch_wasi_has_runnable_work())) {
 		_dispatch_wasi_note_pending();
 	}
 }
@@ -837,6 +844,14 @@ _dispatch_wasi_sleep_briefly_or_until(uint64_t deadline_uptime_ns)
 static bool
 _dispatch_wasi_drain_step(bool include_main)
 {
+	// The host scheduler callback must return without running Dispatch
+	// (see private/private.h). A pump point inside it (a blocking wait,
+	// dispatch_main()) would run client blocks on the stack of the
+	// dispatch_async call that requested the host turn.
+	if (unlikely(_dispatch_wasi_host_schedule_in_progress)) {
+		DISPATCH_CLIENT_CRASH(0, "WASI event loop scheduler drained "
+				"Dispatch inline");
+	}
 	if (_dispatch_wasi_draining) {
 		// no nested drains: the queue state machinery (thread frames, wlh,
 		// dq_state drain locks) is not reentrant on the sole thread. The
@@ -933,8 +948,10 @@ _dispatch_wasi_event_loop_set_scheduler(void (*schedule)(void *), void *context)
 	_dispatch_wasi_host_schedule = schedule;
 	_dispatch_wasi_host_context = context;
 	// Work recorded before registration (static initializers, an export
-	// that ran before the host wired its loop) is handed over now. Inside a
+	// that ran before the host wired its loop) is handed over now. A timer
+	// that a pump armed before registration is handed over too. Inside a
 	// drain the running pump hands it over when its step ends.
+	_dispatch_wasi_armed_timer_unseen = _dispatch_wasi_next_timer_ns() != 0;
 	_dispatch_wasi_hand_off_pending();
 }
 
@@ -958,6 +975,7 @@ _dispatch_wasi_event_loop_perform(unsigned long max_steps,
 	if (consumes_scheduled_turn) {
 		_dispatch_wasi_host_turn_scheduled = false;
 	}
+	_dispatch_wasi_armed_timer_unseen = false;
 	_dispatch_wasi_performing = true;
 	_dispatch_wasi_poll_harvest(0);
 	for (unsigned long step = 0; step < max_steps; step++) {
