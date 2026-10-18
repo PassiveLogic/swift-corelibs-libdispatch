@@ -831,6 +831,13 @@ _dispatch_wasi_drain_step(bool include_main)
 		return false;
 	}
 	_dispatch_wasi_draining = true;
+	// A top-level wait can run in a frame that borrows a wlh without a
+	// reference: dispatch_async_and_wait runs its body under
+	// _dispatch_fake_wlh. The drains below adopt and reset their own wlh,
+	// so hide the borrowed value from them and put it back afterward.
+	// Never release it: this frame does not own a reference.
+	void *borrowed_wlh = _dispatch_thread_getspecific(dispatch_wlh_key);
+	_dispatch_thread_setspecific(dispatch_wlh_key, NULL);
 	bool did_work = true;
 	if (_dispatch_wasi_merge_due_timers() ||
 			_dispatch_timers_heap[0].dth_dirty_bits) {
@@ -870,6 +877,7 @@ _dispatch_wasi_drain_step(bool include_main)
 			break;
 		}
 	}
+	_dispatch_thread_setspecific(dispatch_wlh_key, borrowed_wlh);
 	_dispatch_wasi_draining = false;
 	_dispatch_wasi_hand_off_pending();
 	return did_work;

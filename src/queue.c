@@ -7312,6 +7312,13 @@ dispatch_main(void)
 	// pending emulated signals) park the loop in a host wait; when the
 	// process is fully idle with none of those, waiting would hang forever:
 	// crash loudly instead.
+	// A call from inside a drained work item can never make progress: drains
+	// do not nest, so neither queued work nor due timers could run beneath
+	// it. Crash at once, like the nested waits in shims/lock.c.
+	if (unlikely(_dispatch_wasi_in_drain())) {
+		DISPATCH_CLIENT_CRASH(0, "dispatch_main() called from within a "
+				"drained work item on single-threaded WASI");
+	}
 	_dispatch_object_debug(&_dispatch_main_q, "%s", __func__);
 	for (;;) {
 		_dispatch_wasi_drain();

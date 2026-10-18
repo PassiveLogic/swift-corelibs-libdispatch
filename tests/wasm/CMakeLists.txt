@@ -90,6 +90,11 @@ add_wasi_test(dispatch_wasi_sync_nested_async sync-nested-async.c success
   "sync nested async OK" 5)
 add_wasi_test(dispatch_wasi_async_and_wait async-and-wait.c success
   "async and wait OK" 5)
+add_wasi_test(dispatch_wasi_async_and_wait_pump async-and-wait-pump.c success
+  "async and wait pump OK" 5)
+add_wasi_test(dispatch_wasi_nested_dispatch_main nested-dispatch-main.c crash
+  "dispatch_main() called from within a drained work item" 5
+  "nested dispatch_main starting")
 
 add_executable(dispatch_wasi_host_event_loop host-event-loop.c)
 target_compile_options(dispatch_wasi_host_event_loop PRIVATE -fblocks -Wall)
