@@ -1558,6 +1558,23 @@ _dispatch_fd_entry_create_with_fd(dispatch_fd_t fd, uintptr_t hash)
 			});
 		} else {
 			if (orig_flags != -1) {
+#if defined(__wasi__)
+				// Some WASI hosts refuse fd_fdstat_set_flags on stdio and
+				// directory handles: wasmtime returns EBADF, and hosts
+				// without the call return ENOTSUP or ENOSYS. fstat and
+				// F_GETFL succeeded on this fd, so the error is host policy,
+				// not a libdispatch bug. The fd stays blocking.
+				_dispatch_io_syscall_switch(err,
+					fcntl(fd, F_SETFL, orig_flags | O_NONBLOCK),
+					case EBADF: case ENOTSUP: case ENOSYS:
+						orig_flags = -1;
+						break;
+					default:
+						orig_flags = -1;
+						(void)dispatch_assume_zero(err);
+						break;
+				);
+#else
 				_dispatch_io_syscall_switch(err,
 					fcntl(fd, F_SETFL, orig_flags | O_NONBLOCK),
 					default:
@@ -1565,6 +1582,7 @@ _dispatch_fd_entry_create_with_fd(dispatch_fd_t fd, uintptr_t hash)
 						(void)dispatch_assume_zero(err);
 						break;
 				);
+#endif
 			}
 
 			_dispatch_stream_init(fd_entry,
@@ -2367,6 +2385,12 @@ _dispatch_operation_advise(dispatch_operation_t op, size_t chunk_size)
 		case 0: break;
 		case EINVAL: break; // unsupported advice or file type
 		case ESPIPE: break; // fd refers to a pipe or FIFO
+#if defined(__wasi__)
+		// fd_advise runs on the host, and macOS hosts map it to F_RDADVISE:
+		// the same benign errors as the F_RDADVISE arm above
+		case EFBIG: break; // advised past the end of the file
+		case ENOTSUP: break; // not all file systems support read advice
+#endif
 		default: (void)dispatch_assume_zero(err); break;
 	}
 #elif defined(__OpenBSD__)
