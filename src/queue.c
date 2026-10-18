@@ -6240,14 +6240,21 @@ _dispatch_wasi_root_queue_drain(dispatch_queue_global_t dq)
 	// item so event_wasi.c can rotate among pending roots between turns.
 	// The turn starts narrowed: when the root item is a lane, the lane runs
 	// one of its items and re-enqueues itself if more remain.
-	dispatch_queue_t old_dq = _dispatch_queue_get_current();
-	_dispatch_queue_set_current(NULL);
+	// The turn takes a worker identity: the worker lock owner id and an
+	// empty frame chain, as _dispatch_main_queue_drain hides the frames of
+	// the code that a CFRunLoop drain interrupts. Otherwise an item that a
+	// top-level wait pumps would inherit the queues and once gates of the
+	// interrupted frame, and of the thread-bound main queue.
+	struct dispatch_tsd *tsd = _dispatch_get_tsd_base();
+	pid_t old_tid = tsd->tid;
+	dispatch_thread_frame_s dtf;
 	int pending = os_atomic_dec2o(dq, dgq_pending, relaxed);
 	dispatch_assert(pending >= 0);
 	(void)pending;
 
 	dispatch_priority_t pri = dq->dq_priority;
-	_dispatch_queue_set_current(dq);
+	tsd->tid = DISPATCH_WASI_WORKER_TID;
+	_dispatch_thread_frame_push_and_rebase(&dtf, dq, NULL);
 	_dispatch_init_basepri(pri);
 	_dispatch_adopt_wlh_anon();
 
@@ -6269,7 +6276,8 @@ _dispatch_wasi_root_queue_drain(dispatch_queue_global_t dq)
 	}
 	_dispatch_reset_wlh();
 	_dispatch_clear_basepri();
-	_dispatch_queue_set_current(old_dq);
+	_dispatch_thread_frame_pop(&dtf);
+	tsd->tid = old_tid;
 }
 #endif // defined(__wasi__)
 
@@ -7636,9 +7644,9 @@ DISPATCH_ALWAYS_INLINE
 static inline pid_t
 _gettid(void)
 {
-	// WASI is single-threaded; any nonzero constant works as the sole
-	// thread's id (the value seeds tsd->tid for lock-owner encoding).
-	return 1;
+	// WASI is single-threaded: seed tsd->tid with the main lock owner id.
+	// A root-queue drain turn switches to DISPATCH_WASI_WORKER_TID.
+	return DISPATCH_WASI_MAIN_TID;
 }
 #else
 #error "SYS_gettid unavailable on this system"

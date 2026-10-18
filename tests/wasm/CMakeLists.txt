@@ -90,6 +90,14 @@ add_wasi_test(dispatch_wasi_sync_nested_async sync-nested-async.c success
   "sync nested async OK" 5)
 add_wasi_test(dispatch_wasi_async_and_wait async-and-wait.c success
   "async and wait OK" 5)
+add_wasi_test(dispatch_wasi_pumped_ownership pumped-ownership.c success
+  "pumped ownership OK" 5)
+add_wasi_test(dispatch_wasi_pumped_held_queue_sync pumped-held-queue-sync.c
+  crash "semaphore wait from within a drained work item" 5
+  "pumped item syncs onto the held queue")
+add_wasi_test(dispatch_wasi_pumped_once_reenter pumped-once-reenter.c crash
+  "lock contended with no other thread to release it" 5
+  "pumped item enters the same dispatch_once")
 add_wasi_test(dispatch_wasi_async_and_wait_pump async-and-wait-pump.c success
   "async and wait pump OK" 5)
 add_wasi_test(dispatch_wasi_nested_dispatch_main nested-dispatch-main.c crash

@@ -151,8 +151,16 @@ typedef uint32_t dispatch_lock;
 #define DLOCK_WAITERS_BIT			((dispatch_lock)0x00000001)
 #define DLOCK_FAILED_TRYLOCK_BIT		((dispatch_lock)0x00000002)
 
-// tid is the constant 1 on single-threaded WASI; shift it clear of the
-// low flag bits so the owner encoding survives DLOCK_OWNER_MASK
+// The sole WASI thread uses two lock owner ids. Code outside any drain and
+// main-queue drains run as DISPATCH_WASI_MAIN_TID, the owner of the
+// thread-bound main queue. A root-queue drain turn runs as
+// DISPATCH_WASI_WORKER_TID, as a worker thread would (see
+// _dispatch_wasi_root_queue_drain). So a work item that a top-level wait
+// pumps does not inherit the main queue, or the queue drain locks and once
+// gates that the interrupted frame holds. The shift keeps each id clear of
+// the low flag bits so the owner encoding survives DLOCK_OWNER_MASK.
+#define DISPATCH_WASI_MAIN_TID			((pid_t)1)
+#define DISPATCH_WASI_WORKER_TID		((pid_t)2)
 #define _dispatch_tid_self()			((dispatch_tid)(_dispatch_get_tsd_base()->tid << 2))
 
 DISPATCH_ALWAYS_INLINE
