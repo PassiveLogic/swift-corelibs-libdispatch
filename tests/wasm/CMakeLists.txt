@@ -54,6 +54,20 @@ add_wasi_test(dispatch_wasi_write_source write-source.c success
 add_wasi_test(dispatch_wasi_nested_wait nested-wait.c crash
   "semaphore wait from within a drained work item" 5)
 add_wasi_test(dispatch_wasi_nested_timed_wait nested-timed-wait.c success "probe OK" 5)
+add_wasi_test(dispatch_wasi_nested_sync_diag wait-diagnostics.c crash
+  "dispatch_sync or dispatch_async_and_wait on a busy queue from within a drained work item"
+  5 "nested sync starting")
+target_compile_definitions(dispatch_wasi_nested_sync_diag PRIVATE WAIT_DIAG_SYNC=1)
+add_wasi_test(dispatch_wasi_nested_group_diag wait-diagnostics.c crash
+  "dispatch_group_wait, dispatch_block_wait, or dispatch_source_cancel_and_wait from within a drained work item"
+  5 "nested group wait starting")
+target_compile_definitions(dispatch_wasi_nested_group_diag PRIVATE WAIT_DIAG_GROUP=1)
+add_wasi_test(dispatch_wasi_nested_cancel_diag wait-diagnostics.c crash
+  "dispatch_group_wait, dispatch_block_wait, or dispatch_source_cancel_and_wait from within a drained work item"
+  5 "nested cancel_and_wait starting")
+target_compile_definitions(dispatch_wasi_nested_cancel_diag PRIVATE WAIT_DIAG_CANCEL=1)
+add_wasi_test(dispatch_wasi_cancel_and_wait cancel-and-wait.c success
+  "cancel and wait OK" 5)
 add_wasi_test(dispatch_wasi_dispatch_main_work dispatch-main-work.c crash
   "dispatch_main(): no runnable work on single-threaded WASI" 5 "main queue work OK")
 add_wasi_test(dispatch_wasi_dispatch_main_idle dispatch-main-idle.c crash
@@ -99,7 +113,7 @@ add_wasi_test(dispatch_wasi_async_and_wait async-and-wait.c success
 add_wasi_test(dispatch_wasi_pumped_ownership pumped-ownership.c success
   "pumped ownership OK" 5)
 add_wasi_test(dispatch_wasi_pumped_held_queue_sync pumped-held-queue-sync.c
-  crash "semaphore wait from within a drained work item" 5
+  crash "dispatch_sync or dispatch_async_and_wait on a busy queue from within a drained work item" 5
   "pumped item syncs onto the held queue")
 add_wasi_test(dispatch_wasi_pumped_once_reenter pumped-once-reenter.c crash
   "lock contended with no other thread to release it" 5

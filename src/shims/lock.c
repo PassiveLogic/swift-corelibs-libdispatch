@@ -454,8 +454,18 @@ _dispatch_wasi_wait_park(uint64_t nsec)
 	return _dispatch_wasi_park_ok;
 }
 
-void
-_dispatch_sema4_wait(_dispatch_sema4_t *sema)
+// The public call that reached an indefinite sema4 wait. A WASI sema4 backs
+// both dispatch semaphores and thread events, so the caller passes this to
+// make the deadlock diagnostic name the call that blocked.
+typedef enum {
+	_dispatch_wasi_sema4_waiter_semaphore,	// dispatch_semaphore_wait
+	_dispatch_wasi_sema4_waiter_queue,	// dispatch_sync, dispatch_async_and_wait
+} _dispatch_wasi_sema4_waiter_t;
+
+DISPATCH_NOINLINE
+static void
+_dispatch_wasi_sema4_wait(_dispatch_sema4_t *sema,
+		_dispatch_wasi_sema4_waiter_t waiter)
 {
 	for (;;) {
 		if (_dispatch_sema4_try_consume(sema)) return;
@@ -464,9 +474,20 @@ _dispatch_sema4_wait(_dispatch_sema4_t *sema)
 		case _dispatch_wasi_park_ok:
 			break;
 		case _dispatch_wasi_park_nested:
+			if (waiter == _dispatch_wasi_sema4_waiter_queue) {
+				DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
+						"dispatch_sync or dispatch_async_and_wait on a busy "
+						"queue from within a drained work item");
+			}
 			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
 					"semaphore wait from within a drained work item");
 		case _dispatch_wasi_park_stuck:
+			if (waiter == _dispatch_wasi_sema4_waiter_queue) {
+				DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
+						"dispatch_sync or dispatch_async_and_wait on a busy "
+						"queue with no runnable work, timers, or event "
+						"sources");
+			}
 			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
 					"semaphore wait with no runnable work, timers, or "
 					"event sources");
@@ -475,6 +496,12 @@ _dispatch_sema4_wait(_dispatch_sema4_t *sema)
 					"semaphore wait with only main-queue work pending");
 		}
 	}
+}
+
+void
+_dispatch_sema4_wait(_dispatch_sema4_t *sema)
+{
+	_dispatch_wasi_sema4_wait(sema, _dispatch_wasi_sema4_waiter_semaphore);
 }
 
 bool
@@ -728,6 +755,13 @@ _dispatch_wait_on_address(uint32_t volatile *_address, uint32_t value,
 	return _umtx_op((void*)address, UMTX_OP_WAIT_UINT, value, 0, 0);
 #elif defined(__wasi__)
 	(void)flags;
+	// The callers are dispatch_group_wait (and dispatch_block_wait through
+	// it) and dispatch_source_cancel_and_wait. Cancel-and-wait on a timer
+	// source, or on any source whose cancellation cannot finish inline,
+	// waits here for the manager queue to unregister the source. The manager
+	// cannot run while a drained work item blocks the sole thread, so that
+	// call crashes as a nested wait from inside any work item. Use
+	// dispatch_source_cancel with a cancel handler there instead.
 	while (os_atomic_load(address, relaxed) == value) {
 		// Re-check the deadline before each drain step. A continuous stream
 		// of runnable work then cannot hold a timed wait past its deadline:
@@ -743,11 +777,13 @@ _dispatch_wait_on_address(uint32_t volatile *_address, uint32_t value,
 			break;
 		case _dispatch_wasi_park_nested:
 			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
-					"_dispatch_wait_on_address() from within a drained "
+					"dispatch_group_wait, dispatch_block_wait, or "
+					"dispatch_source_cancel_and_wait from within a drained "
 					"work item");
 		case _dispatch_wasi_park_stuck:
 			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
-					"_dispatch_wait_on_address() with no runnable work, "
+					"dispatch_group_wait, dispatch_block_wait, or "
+					"dispatch_source_cancel_and_wait with no runnable work, "
 					"timers, or event sources");
 		case _dispatch_wasi_park_main_only:
 			DISPATCH_CLIENT_CRASH(0, "single-threaded WASI deadlock: "
@@ -809,6 +845,9 @@ _dispatch_thread_event_wait_slow(dispatch_thread_event_t dte)
 				NULL, FUTEX_PRIVATE_FLAG);
 #endif
 	}
+#elif defined(__wasi__)
+	_dispatch_wasi_sema4_wait(&dte->dte_sema,
+			_dispatch_wasi_sema4_waiter_queue);
 #else
 	_dispatch_sema4_wait(&dte->dte_sema);
 #endif
