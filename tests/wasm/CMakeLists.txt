@@ -399,3 +399,51 @@ add_wasi_test(dispatch_wasi_scheduler_no_pump scheduler-pump.c success
   "scheduler non-pumping calls OK" 5 "scheduler callback entered")
 target_compile_definitions(dispatch_wasi_scheduler_no_pump PRIVATE
   SCHEDULER_PUMP_MODE=5)
+
+add_wasi_test(dispatch_wasi_once_corrupt_predicate once-corrupt-predicate.c crash
+  "single-threaded WASI: corrupt lock value" 5 "garbage predicate set")
+add_wasi_test(dispatch_wasi_constructor_main_queue constructor-main-queue.c
+  success "constructor main queue OK" 5)
+# crash reasons reach stderr whatever LIBDISPATCH_LOG says: a wasm trap
+# carries no payload, so a disabled or redirected log must not hide them
+add_wasi_test(dispatch_wasi_crash_log_disabled crash-log-env.c crash
+  "BUG IN CLIENT OF LIBDISPATCH: Over-resume of an object" 5
+  "crash log env NO armed")
+add_wasi_test(dispatch_wasi_crash_log_disabled_assert crash-log-env.c crash
+  "Block was expected to execute on queue [crash.log.env]" 5
+  "crash log env NO armed")
+target_compile_definitions(dispatch_wasi_crash_log_disabled_assert PRIVATE
+  CRASH_LOG_ASSERT=1)
+add_executable(dispatch_wasi_crash_log_file crash-log-env.c)
+target_compile_definitions(dispatch_wasi_crash_log_file PRIVATE
+  "CRASH_LOG_ENV=\"file\"")
+target_compile_options(dispatch_wasi_crash_log_file PRIVATE -fblocks -Wall)
+target_link_libraries(dispatch_wasi_crash_log_file PRIVATE dispatch)
+target_link_options(dispatch_wasi_crash_log_file PRIVATE
+  -nodefaultlibs
+  -lc
+  "${DISPATCH_WASI_BUILTINS}")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/crash-log-var-tmp")
+add_test(NAME dispatch_wasi_crash_log_file
+  COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
+    --preopen "/var/tmp:${CMAKE_CURRENT_BINARY_DIR}/crash-log-var-tmp"
+    crash "$<TARGET_FILE:dispatch_wasi_crash_log_file>"
+    "BUG IN CLIENT OF LIBDISPATCH: Over-resume of an object"
+    "crash log env file armed")
+set_tests_properties(dispatch_wasi_crash_log_file PROPERTIES TIMEOUT 5)
+if(NOT DISPATCH_WASI_NODE_OK)
+  set_tests_properties(dispatch_wasi_crash_log_file PROPERTIES DISABLED TRUE)
+endif()
+# allocation failure: the sole thread cannot free memory while it sleeps, so
+# the inherited sleep-and-retry loop must become a named crash, not a hang.
+# A small --max-memory makes the module memory cap reachable in milliseconds.
+add_wasi_test(dispatch_wasi_alloc_failure alloc-failure.c crash
+  "Out of memory: allocation cannot be retried on single-threaded WASI" 5 "heap exhausted")
+add_wasi_test(dispatch_wasi_alloc_failure_async alloc-failure.c crash
+  "Out of memory: allocation cannot be retried on single-threaded WASI" 5 "heap exhausted")
+target_compile_definitions(dispatch_wasi_alloc_failure_async PRIVATE
+  ALLOC_FAILURE_ASYNC=1)
+foreach(_alloc_test dispatch_wasi_alloc_failure
+    dispatch_wasi_alloc_failure_async)
+  target_link_options(${_alloc_test} PRIVATE "-Wl,--max-memory=16777216")
+endforeach()

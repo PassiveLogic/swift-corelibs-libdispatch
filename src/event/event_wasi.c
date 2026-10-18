@@ -956,7 +956,8 @@ _dispatch_wasi_drain(void)
 }
 
 void
-_dispatch_wasi_event_loop_set_scheduler(void (*schedule)(void *), void *context)
+_dispatch_wasi_event_loop_set_scheduler(
+		dispatch_wasi_event_loop_schedule_t schedule, void *context)
 {
 	if (_dispatch_wasi_host_schedule) {
 		DISPATCH_CLIENT_CRASH(0, "WASI event loop scheduler already registered");

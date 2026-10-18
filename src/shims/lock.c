@@ -83,14 +83,21 @@ _dispatch_thread_switch(dispatch_lock value, dispatch_lock_options_t flags,
 {
 	(void)flags;
 	(void)timeout;
-	// Only reachable when an unfair lock or once gate is contended, and on
-	// the sole WASI thread "contended by another owner" is always a dead
-	// state: either internal state corruption, or a callback run by a
-	// pumping wait trying to take a lock still held by an interrupted
-	// frame. Yielding cannot help (there is nobody to yield to) and would
-	// spin hot forever; crash loudly instead, naming the observed owner.
-	DISPATCH_CLIENT_CRASH(value, "single-threaded WASI deadlock: "
-			"lock contended with no other thread to release it");
+	// Only reachable when an unfair lock or once gate is contended by an
+	// owner other than the current one. The sole WASI thread has two owner
+	// ids (see _dispatch_tid_self). A root-queue turn that a pumping wait
+	// runs can meet a lock or once gate that the interrupted frame holds
+	// under the other id. That is a deadlock: no other thread can release
+	// the lock, and a yield would spin forever. Any other owner value means
+	// the lock word is corrupt, for example a garbage dispatch_once_t.
+	dispatch_tid owner = _dispatch_lock_owner(value);
+	if (owner == (dispatch_tid)(DISPATCH_WASI_MAIN_TID << 2) ||
+			owner == (dispatch_tid)(DISPATCH_WASI_WORKER_TID << 2)) {
+		DISPATCH_CLIENT_CRASH(value, "single-threaded WASI deadlock: "
+				"lock contended with no other thread to release it");
+	}
+	DISPATCH_CLIENT_CRASH(value, "single-threaded WASI: corrupt lock value "
+			"(owner is not the sole thread)");
 }
 #endif
 #elif defined(__unix__)

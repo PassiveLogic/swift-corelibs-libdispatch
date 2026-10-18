@@ -51,7 +51,19 @@
 
 
 #if USE_LIBDISPATCH_INIT_CONSTRUCTOR
+#if defined(__wasi__)
+// WASI links libdispatch statically. wasm-ld runs default-priority
+// constructors in link order, so client constructors would run before this
+// one and see an unbound main queue. Priority 101 is the earliest value
+// open to non-implementation code. It makes libdispatch ready before
+// default-priority client constructors, as a shared libdispatch is on
+// other platforms. A client constructor at priority 101 or lower runs
+// before this one and must not use Dispatch: the main queue is not bound
+// to the thread yet, so its work would run as ordinary serial-queue work.
+DISPATCH_NOTHROW __attribute__((constructor(101)))
+#else
 DISPATCH_NOTHROW __attribute__((constructor))
+#endif
 void
 _libdispatch_init(void);
 
@@ -1324,6 +1336,21 @@ _dispatch_log(const char *msg, ...)
 	va_end(ap);
 }
 
+#if defined(__wasi__)
+DISPATCH_NOINLINE DISPATCH_COLD
+void
+_dispatch_wasi_crash_log_dynamic(const char *msg)
+{
+	// the only caller, _dispatch_assert_crash(), already sent msg through
+	// _dispatch_log(), which initialized the log state; write msg again
+	// only when LIBDISPATCH_LOG disabled the log or sent it to a file
+	if (dispatch_log_disabled || (dispatch_logfile != -1 &&
+			dispatch_logfile != STDERR_FILENO)) {
+		fprintf(stderr, "%s\n", msg);
+	}
+}
+#endif // defined(__wasi__)
+
 #endif // DISPATCH_USE_OS_DEBUG_LOG
 
 #pragma mark -
@@ -1407,8 +1434,15 @@ DISPATCH_NOINLINE
 void
 _dispatch_temporary_resource_shortage(void)
 {
+#if defined(__wasi__)
+	// Single-threaded WASI: no other thread can free memory while this
+	// one sleeps, so the caller's allocation retry can never succeed
+	DISPATCH_CLIENT_CRASH(0, "Out of memory: allocation cannot be "
+			"retried on single-threaded WASI");
+#else
 	sleep(1);
 	__asm__ __volatile__("");  // prevent tailcall
+#endif
 }
 
 void *

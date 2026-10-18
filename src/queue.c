@@ -284,12 +284,18 @@ _dispatch_cache_cleanup(void *value)
 static void
 _dispatch_force_cache_cleanup(void)
 {
+#if defined(__wasi__)
+	// Nothing to do. This cleanup is for threads that are not workers. On
+	// single-threaded WASI the sole thread is also the only worker for every
+	// root queue, so its continuation cache is the cache of the process.
+#else
 	dispatch_continuation_t dc;
 	dc = _dispatch_thread_getspecific(dispatch_cache_key);
 	if (dc) {
 		_dispatch_thread_setspecific(dispatch_cache_key, NULL);
 		_dispatch_cache_cleanup(dc);
 	}
+#endif // defined(__wasi__)
 }
 
 #if DISPATCH_USE_MEMORYPRESSURE_SOURCE
@@ -5427,7 +5433,10 @@ _dispatch_wasi_mgr_queue_drain(void)
 	// Single-threaded WASI has no manager thread: drain the manager queue
 	// inline the way the kevent workqueue manager drain does (see
 	// _dispatch_wlh_worker_thread_init/_reset), saving and restoring the
-	// current queue because the sole thread is not a pristine worker.
+	// current queue because the sole thread is not a pristine worker. Like
+	// that drain, it keeps the thread's continuation cache: the
+	// _dispatch_force_cache_cleanup() call in _dispatch_mgr_queue_drain is
+	// a no-op on WASI.
 	dispatch_queue_t old_dq = _dispatch_queue_get_current();
 	_dispatch_queue_set_current(&_dispatch_mgr_q);
 	_dispatch_queue_mgr_lock(&_dispatch_mgr_q);
@@ -7254,7 +7263,9 @@ _dispatch_wasi_main_queue_drain(void)
 	// the shared _dispatch_main_queue_drain above: the runloop-handle and
 	// thread-QoS-override steps it gates under DISPATCH_COCOA_COMPAT do not
 	// exist here (no runloop handle; without HAVE_PTHREAD_WORKQUEUE_QOS both
-	// sides of the QoS check are always 0)
+	// sides of the QoS check are always 0). Its final
+	// _dispatch_force_cache_cleanup() is a no-op here, because the sole
+	// thread is also the only root-queue worker.
 	_dispatch_main_queue_drain(&_dispatch_main_q);
 }
 #endif // defined(__wasi__)
