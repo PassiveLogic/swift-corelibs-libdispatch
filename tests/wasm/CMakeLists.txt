@@ -331,9 +331,7 @@ if(ENABLE_SWIFT)
     "SHELL:-vfsoverlay \"${PROJECT_BINARY_DIR}/dispatch-vfs-overlay.yaml\""
     "SHELL:-Xcc -fblocks"
     "SHELL:-Xcc -I\"${PROJECT_SOURCE_DIR}\""
-    "SHELL:-Xcc -D_WASI_EMULATED_SIGNAL"
-    "SHELL:-Xcc -D_WASI_EMULATED_MMAN"
-    "SHELL:-Xcc -D_WASI_EMULATED_GETPID")
+    "SHELL:-Xcc -D_WASI_EMULATED_SIGNAL")
   target_link_directories(dispatch_wasi_swift_autolink_consumer PRIVATE
     "${PROJECT_BINARY_DIR}/src"
     "${PROJECT_BINARY_DIR}/src/swift"

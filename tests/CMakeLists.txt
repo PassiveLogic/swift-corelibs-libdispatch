@@ -40,6 +40,10 @@ add_library(bsdtests
               dispatch_test.c)
 target_link_libraries(bsdtests PUBLIC
   dispatch)
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  # the harness logs the process id; libdispatch links the getpid emulation
+  target_compile_definitions(bsdtests PRIVATE _WASI_EMULATED_GETPID)
+endif()
 target_include_directories(bsdtests
                            PRIVATE
                              ${CMAKE_CURRENT_BINARY_DIR}
