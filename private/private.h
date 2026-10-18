@@ -192,6 +192,7 @@ void _dispatch_wasi_event_loop_set_scheduler(
  * Runs at most max_steps drain phases. A manager or main-queue phase may drain
  * a captured queue snapshot. A root-queue phase runs one work item. When that
  * item is a queue, the phase runs one of its items and re-enqueues the queue.
+ * A serial queue in a main-queue phase also runs one item and is re-enqueued.
  *
  * Each scheduler call requests one host turn. Dispatch makes no other
  * scheduler call until a perform call consumes that turn. Pass

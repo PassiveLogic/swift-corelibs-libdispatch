@@ -79,6 +79,8 @@ add_wasi_test(dispatch_wasi_root_fairness root-fairness.c success
   "root fairness OK" 5)
 add_wasi_test(dispatch_wasi_main_root_fairness main-root-fairness.c success
   "main root fairness OK" 5)
+add_wasi_test(dispatch_wasi_main_lane_fairness main-lane-fairness.c success
+  "main lane fairness OK" 10)
 add_wasi_test(dispatch_wasi_main_root_fairness_perform
   main-root-fairness-perform.c success "main root fairness perform OK" 5)
 add_wasi_test(dispatch_wasi_serial_lane_fairness serial-lane-fairness.c success

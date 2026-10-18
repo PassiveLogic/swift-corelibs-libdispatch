@@ -3575,14 +3575,19 @@ _dispatch_queue_drain_should_narrow(dispatch_invoke_context_t dic)
 // manager queue, the main queue, other roots, a waiting pump, and the host
 // loop. A WASI root step therefore starts narrowed: a lane drain runs one
 // item, then takes the narrowing exit when more items remain. The exit
-// re-enqueues the lane on its target queue. A drain that does not start
-// from a root step (manager queue, main queue) has a zeroed context, and
-// dispatch_with_disabled_narrowing() zeroes it. Those drains run to the end.
+// re-enqueues the lane on its target queue. A main-queue step narrows the
+// same way: a lane in its snapshot runs one item and goes to the back of
+// the main queue. Items queued directly on the main queue still run as one
+// captured snapshot. The manager drain never narrows, and
+// dispatch_with_disabled_narrowing() turns narrowing off for a source's own
+// items.
+bool _dispatch_wasi_main_step_narrowing;
 #define _dispatch_queue_drain_init_narrowing_check_deadline(dic, pri) \
 		((void)(pri), \
 		(dic)->dic_next_narrow_check = DISPATCH_THREAD_IS_NARROWING)
 #define _dispatch_queue_drain_should_narrow(dic) \
-		((dic)->dic_next_narrow_check != 0)
+		((dic)->dic_next_narrow_check != 0 || \
+		_dispatch_wasi_main_step_narrowing)
 #else
 #define _dispatch_queue_drain_init_narrowing_check_deadline(rq, dic) ((void)0)
 #define _dispatch_queue_drain_should_narrow(dic)  false
@@ -7259,8 +7264,11 @@ _dispatch_wasi_main_queue_drain(void)
 	// exist here (no runloop handle; without HAVE_PTHREAD_WORKQUEUE_QOS both
 	// sides of the QoS check are always 0). Its final
 	// _dispatch_force_cache_cleanup() is a no-op here, because the sole
-	// thread is also the only root-queue worker.
+	// thread is also the only root-queue worker. A serial queue that targets
+	// the main queue runs one item per step (see the WASI narrowing arm).
+	_dispatch_wasi_main_step_narrowing = true;
 	_dispatch_main_queue_drain(&_dispatch_main_q);
+	_dispatch_wasi_main_step_narrowing = false;
 }
 #endif // defined(__wasi__)
 
