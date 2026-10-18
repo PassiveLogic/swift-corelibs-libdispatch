@@ -77,6 +77,8 @@ add_wasi_test(dispatch_wasi_main_queue_order main-queue-order.c success
   "main queue order OK" 5)
 add_wasi_test(dispatch_wasi_blocking_waits blocking-waits.c success
   "blocking waits OK" 10)
+add_wasi_test(dispatch_wasi_expired_wait expired-wait.c success
+  "expired wait OK" 5)
 add_wasi_test(dispatch_wasi_timed_wait_main_backlog timed-wait-main-backlog.c
   success "timed wait main backlog OK" 5)
 add_wasi_test(dispatch_wasi_api_surface api-surface.c success "api surface OK" 10)

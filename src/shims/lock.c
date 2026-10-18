@@ -407,13 +407,23 @@ DISPATCH_NOINLINE
 static _dispatch_wasi_park_result_t
 _dispatch_wasi_wait_park(uint64_t nsec)
 {
+	uint64_t deadline = 0;
+	if (nsec != DISPATCH_TIME_FOREVER &&
+			(os_add_overflow(_dispatch_uptime(), nsec, &deadline) ||
+			deadline >= DISPATCH_TIME_MAX_VALUE)) {
+		// _dispatch_timeout() returns "FOREVER - now" for a dispatch_time_t
+		// past DISPATCH_TIME_MAX_VALUE. No dispatch_time_t can hold such a
+		// deadline, so park as an indefinite wait: never sleep to a wrapped
+		// deadline.
+		nsec = DISPATCH_TIME_FOREVER;
+	}
 	if (nsec == DISPATCH_TIME_FOREVER) {
 		if (_dispatch_wasi_in_drain()) {
 			// nested waits can never be satisfied: no other work or timer
 			// can run while a drained item blocks the sole thread
 			return _dispatch_wasi_park_nested;
 		}
-		uint64_t deadline = _dispatch_wasi_next_timer_ns();
+		deadline = _dispatch_wasi_next_timer_ns();
 		if (!deadline && !_dispatch_wasi_has_event_sources()) {
 			// waits never drain the main queue (see shims/lock.h)
 			return _dispatch_wasi_main_queue_pending() ?
@@ -423,9 +433,16 @@ _dispatch_wasi_wait_park(uint64_t nsec)
 		// can still produce the work that satisfies this wait
 		_dispatch_wasi_wait_for_events(deadline);
 	} else if (_dispatch_wasi_in_drain()) {
-		_dispatch_wasi_sleep_until(_dispatch_uptime() + nsec);
+		_dispatch_wasi_sleep_until(deadline);
 	} else {
-		_dispatch_wasi_sleep_briefly_or_until(_dispatch_uptime() + nsec);
+		// park toward the nearer of this wait's deadline and the next armed
+		// timer: a timer, an armed fd source, or a pending emulated signal
+		// can still produce the work that satisfies this wait
+		uint64_t next_timer = _dispatch_wasi_next_timer_ns();
+		if (next_timer && next_timer < deadline) {
+			deadline = next_timer;
+		}
+		_dispatch_wasi_wait_for_events(deadline);
 	}
 	return _dispatch_wasi_park_ok;
 }
@@ -456,11 +473,14 @@ _dispatch_sema4_wait(_dispatch_sema4_t *sema)
 bool
 _dispatch_sema4_timedwait(_dispatch_sema4_t *sema, dispatch_time_t timeout)
 {
-	do {
+	for (;;) {
 		if (_dispatch_sema4_try_consume(sema)) return false;
-		if (_dispatch_wasi_drain_one()) continue;
+		// check the deadline before draining, like _dispatch_wait_on_address:
+		// a wait whose deadline already passed reports a timeout without
+		// running queued work on the caller's stack
 		uint64_t nsec = _dispatch_timeout(timeout);
-		if (nsec == 0) break;
+		if (nsec == 0) return true;
+		if (_dispatch_wasi_drain_one()) continue;
 		switch (_dispatch_wasi_wait_park(nsec)) {
 		case _dispatch_wasi_park_ok:
 			break;
@@ -474,8 +494,7 @@ _dispatch_sema4_timedwait(_dispatch_sema4_t *sema, dispatch_time_t timeout)
 					"semaphore timedwait with no runnable work, "
 					"timers, or event sources");
 		}
-	} while (_dispatch_timeout(timeout));
-	return true;
+	}
 }
 #else
 #error "port has to implement _dispatch_sema4_t"

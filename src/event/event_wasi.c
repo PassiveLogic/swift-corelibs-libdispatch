@@ -739,15 +739,25 @@ _dispatch_event_loop_timer_delete(dispatch_timer_heap_t dth DISPATCH_UNUSED,
 	_dispatch_wasi_timeout[DISPATCH_TIMER_CLOCK(tidx)].dwt_armed = false;
 }
 
+// Returns the nearest armed deadline in the _dispatch_uptime() domain, or 0
+// when no timer is armed. A deadline on another clock stays in its own clock
+// domain, and this function projects it onto uptime with that clock's
+// current reading. The clocks are read only for an armed timer on another
+// clock, so an idle check makes no host clock call. Each pump point sleeps
+// toward the result with one relative host sleep. WASI has no clock-change
+// notification, so a wall-clock change or a host suspend during that sleep
+// takes effect when the sleep ends. The next wake then fires an overdue wall
+// timer. A backward change never fires a timer early.
 uint64_t
 _dispatch_wasi_next_timer_ns(void)
 {
-	uint64_t uptime = _dispatch_uptime();
+	uint64_t uptime = 0;
 	uint64_t next = 0;
 	for (size_t i = 0; i < countof(_dispatch_wasi_timeout); i++) {
 		if (!_dispatch_wasi_timeout[i].dwt_armed) continue;
 		uint64_t deadline = _dispatch_wasi_timeout[i].dwt_deadline;
 		if (i != DISPATCH_CLOCK_UPTIME) {
+			if (!uptime) uptime = _dispatch_uptime();
 			uint64_t now = _dispatch_time_now((dispatch_clock_t)i);
 			deadline = uptime + (deadline > now ? deadline - now : 0);
 		}
@@ -774,17 +784,33 @@ _dispatch_wasi_merge_due_timers(void)
 
 #pragma mark sleeping
 
+// A clock sleep needs poll_oneoff clock subscriptions. A runtime without
+// them (WasmKit 0.1.x has no poll_oneoff) fails every sleep at once. Some
+// runtimes also log each failed call. After the first failure, sleeps log
+// one warning and return at once. Every caller loops to its own deadline, so
+// waits stay correct and poll the clock until the deadline.
+static bool _dispatch_wasi_cannot_sleep;
+
 void
 _dispatch_wasi_sleep_until(uint64_t uptime_ns)
 {
 	uint64_t now = _dispatch_uptime();
-	if (uptime_ns <= now) return;
+	if (uptime_ns <= now || _dispatch_wasi_cannot_sleep) return;
 	uint64_t delta = uptime_ns - now;
 	struct timespec ts = {
 		.tv_sec = (time_t)(delta / NSEC_PER_SEC),
 		.tv_nsec = (long)(delta % NSEC_PER_SEC),
 	};
-	while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {
+	// Sleep on the clock that _dispatch_uptime() reads. nanosleep() is a
+	// CLOCK_REALTIME sleep in wasi-libc, so a wall-clock change would
+	// stretch it. clock_nanosleep() returns an error number and does not
+	// set errno. WASI delivers no asynchronous signals.
+	int rc = clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL);
+	if (unlikely(rc != 0)) {
+		_dispatch_wasi_cannot_sleep = true;
+		_dispatch_log("libdispatch: this WASI runtime cannot sleep "
+				"(clock_nanosleep error %d); waits poll the clock instead",
+				rc);
 	}
 }
 
@@ -827,16 +853,6 @@ _dispatch_wasi_wait_for_events(uint64_t deadline_uptime_ns)
 		return;
 	}
 	_dispatch_wasi_poll_harvest(timeout_ms);
-}
-
-void
-_dispatch_wasi_sleep_briefly_or_until(uint64_t deadline_uptime_ns)
-{
-	uint64_t next_timer = _dispatch_wasi_next_timer_ns();
-	if (next_timer && next_timer < deadline_uptime_ns) {
-		deadline_uptime_ns = next_timer;
-	}
-	_dispatch_wasi_wait_for_events(deadline_uptime_ns);
 }
 
 #pragma mark cooperative drain
