@@ -24,6 +24,8 @@
 int
 main(void)
 {
+	// dispatch_main() runs the 20 ms timer block. Then no work and no timer
+	// remain, so dispatch_main() crashes with its named diagnostic.
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC),
 			dispatch_get_main_queue(), ^{ puts("main queue work OK"); });
 	dispatch_main();

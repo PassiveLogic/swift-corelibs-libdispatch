@@ -265,7 +265,7 @@ DISPATCH_ENUM(dispatch_wakeup_flags, uint32_t,
 );
 
 typedef struct dispatch_invoke_context_s {
-#if DISPATCH_USE_WORKQUEUE_NARROWING
+#if DISPATCH_USE_WORKQUEUE_NARROWING || defined(__wasi__)
 	uint64_t dic_next_narrow_check;
 #endif
 	struct dispatch_object_s *dic_barrier_waiter;
@@ -275,15 +275,30 @@ typedef struct dispatch_invoke_context_s {
 #endif
 } dispatch_invoke_context_s, *dispatch_invoke_context_t;
 
-#if DISPATCH_USE_WORKQUEUE_NARROWING
+#if DISPATCH_USE_WORKQUEUE_NARROWING || defined(__wasi__)
 #define DISPATCH_THREAD_IS_NARROWING 1
 
+#if defined(__wasi__)
+// True only while a WASI main-queue step runs (see
+// _dispatch_wasi_main_queue_drain in queue.c).
+extern bool _dispatch_wasi_main_step_narrowing;
+#define dispatch_with_disabled_narrowing(dic, ...) ({ \
+		uint64_t suspend_narrow_check = dic->dic_next_narrow_check; \
+		bool suspend_main_narrowing = _dispatch_wasi_main_step_narrowing; \
+		dic->dic_next_narrow_check = 0; \
+		_dispatch_wasi_main_step_narrowing = false; \
+		__VA_ARGS__; \
+		dic->dic_next_narrow_check = suspend_narrow_check; \
+		_dispatch_wasi_main_step_narrowing = suspend_main_narrowing; \
+	})
+#else
 #define dispatch_with_disabled_narrowing(dic, ...) ({ \
 		uint64_t suspend_narrow_check = dic->dic_next_narrow_check; \
 		dic->dic_next_narrow_check = 0; \
 		__VA_ARGS__; \
 		dic->dic_next_narrow_check = suspend_narrow_check; \
 	})
+#endif
 #else
 #define dispatch_with_disabled_narrowing(dic, ...) __VA_ARGS__
 #endif

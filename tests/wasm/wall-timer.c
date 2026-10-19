@@ -18,17 +18,27 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
+/*
+ * A dispatch_after with a walltime deadline fires, and a top-level timed
+ * semaphore wait returns when its handler signals.
+ */
 #include <dispatch/dispatch.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
+
+// the walltime delay of the timer
+#define TIMER_MS 20
+// the timeout of the wait, far longer than the timer delay
+#define WAIT_TIMEOUT_MS 500
 
 static uint64_t
 now_ms(void)
 {
 	struct timespec time;
 	clock_gettime(CLOCK_MONOTONIC, &time);
-	return (uint64_t)time.tv_sec * 1000 + (uint64_t)time.tv_nsec / 1000000;
+	return ((uint64_t)time.tv_sec * NSEC_PER_SEC + (uint64_t)time.tv_nsec) /
+			NSEC_PER_MSEC;
 }
 
 int
@@ -37,15 +47,15 @@ main(void)
 	dispatch_queue_t queue = dispatch_queue_create("wasi.wall.timer", NULL);
 	dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
 	uint64_t start = now_ms();
-	dispatch_after(dispatch_walltime(NULL, 20 * NSEC_PER_MSEC), queue, ^{
+	dispatch_after(dispatch_walltime(NULL, TIMER_MS * NSEC_PER_MSEC), queue, ^{
 		dispatch_semaphore_signal(semaphore);
 	});
 	long result = dispatch_semaphore_wait(semaphore,
-			dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC));
+			dispatch_time(DISPATCH_TIME_NOW, WAIT_TIMEOUT_MS * NSEC_PER_MSEC));
 	uint64_t elapsed = now_ms() - start;
 	dispatch_release(semaphore);
 	dispatch_release(queue);
-	if (result != 0 || elapsed < 20) return 1;
+	if (result != 0 || elapsed < TIMER_MS) return 1;
 	puts("wall timer OK");
 	return 0;
 }

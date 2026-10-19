@@ -20,12 +20,14 @@
 
 /*
  * Blocking-wait API contracts on single-threaded WASI:
- *  - dispatch_block_wait on a queued block runs the block and returns success
- *  - dispatch_group_wait(FOREVER) returns 0 once the group empties
- *  - a timed dispatch_semaphore_wait that can never be satisfied consumes its
- *    full timeout before reporting KERN_OPERATION_TIMED_OUT (it must not
- *    return early: single-threadedness is not an excuse to skip the wait)
- *  - dispatch_semaphore_wait(FOREVER) is satisfied by queued work
+ *  - dispatch_block_wait on a queued block runs the block and returns 0
+ *  - dispatch_group_wait(FOREVER) returns 0 when the group is empty
+ *  - a timed dispatch_semaphore_wait that nothing can signal waits for its
+ *    full timeout, then returns KERN_OPERATION_TIMED_OUT. A single thread
+ *    is not a reason to return early.
+ *  - queued work signals a dispatch_semaphore_wait(FOREVER)
+ *
+ * Each check exits with its own status, so the status names the failed check.
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
@@ -33,12 +35,21 @@
 #include <stdint.h>
 #include <time.h>
 
+// the block wait must return long before this timeout
+#define BLOCK_WAIT_TIMEOUT (2 * NSEC_PER_SEC)
+// the timeout of the semaphore wait that nothing signals
+#define SEMA_WAIT_MS 250
+// the minimum time that wait must take, with 50 ms of margin for a coarse
+// host clock
+#define SEMA_MIN_ELAPSED_MS 200
+
 static uint64_t
 mono_ms(void)
 {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+	return ((uint64_t)ts.tv_sec * NSEC_PER_SEC + (uint64_t)ts.tv_nsec) /
+			NSEC_PER_MSEC;
 }
 
 int main(void)
@@ -50,7 +61,7 @@ int main(void)
 	dispatch_block_t b = dispatch_block_create(0, ^{ block_ran = 1; });
 	dispatch_async(gq, b);
 	if (dispatch_block_wait(b,
-			dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC)) != 0 ||
+			dispatch_time(DISPATCH_TIME_NOW, BLOCK_WAIT_TIMEOUT)) != 0 ||
 			!block_ran) {
 		printf("FAIL: block_wait (ran=%d)\n", block_ran);
 		exit(1);
@@ -67,9 +78,10 @@ int main(void)
 	dispatch_semaphore_t sem = dispatch_semaphore_create(0);
 	uint64_t t0 = mono_ms();
 	intptr_t r = dispatch_semaphore_wait(sem,
-			dispatch_time(DISPATCH_TIME_NOW, (int64_t)(250 * NSEC_PER_MSEC)));
+			dispatch_time(DISPATCH_TIME_NOW,
+			(int64_t)(SEMA_WAIT_MS * NSEC_PER_MSEC)));
 	uint64_t elapsed = mono_ms() - t0;
-	if (r == 0 || elapsed < 200) {
+	if (r == 0 || elapsed < SEMA_MIN_ELAPSED_MS) {
 		printf("FAIL: sema timedwait r=%ld elapsed=%llums\n", (long)r,
 				(unsigned long long)elapsed);
 		exit(3);

@@ -19,11 +19,11 @@
  */
 
 /*
- * Replacing a queue-specific value submits the old value's destructor to a
- * root queue. The destructor must run at a later pump point, never on the
- * submitting stack under dqsh_lock: a destructor that touches the same
- * queue's specifics would otherwise deadlock on the lock its own caller
- * still holds (see WAIT-PUMPING-AUDIT.md).
+ * Replacing a queue-specific value submits the destructor of the old value
+ * to a root queue. The destructor must run at a later pump point, never on
+ * the submitting stack under dqsh_lock. Otherwise a destructor that reads
+ * the specifics of the same queue deadlocks on the lock that its own caller
+ * still holds.
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
@@ -37,8 +37,8 @@ static int destructor_ran;
 static void
 old_value_destructor(void *ctxt)
 {
-	// re-enter the same queue's specifics from inside the destructor; this
-	// must not observe a held dqsh_lock
+	// read the specifics of the same queue from inside the destructor. This
+	// must not find dqsh_lock held.
 	if (dispatch_queue_get_specific(q, &skey) == NULL) {
 		printf("FAIL: replacement value not visible in destructor\n");
 		exit(1);

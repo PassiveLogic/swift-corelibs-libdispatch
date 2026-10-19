@@ -19,9 +19,9 @@
  */
 
 /*
- * Broad Dispatch API surface smoke for single-threaded WASI: exercises the
- * object, queue-attribute, block, data, group, and source families end to
- * end in one binary.
+ * A smoke test of the Dispatch API surface on single-threaded WASI. One
+ * binary runs the object, queue attribute, block, data, group, and source
+ * APIs end to end.
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
@@ -32,6 +32,7 @@
 		if (!(cond)) { printf("FAIL: %s\n", name); exit(1); } \
 	} while (0)
 
+// The callbacks write these globals, so they are not const.
 static dispatch_once_t once_tok;
 static int once_n = 0;
 static void once_fn(void *ctx) { (void)ctx; once_n++; }
@@ -39,8 +40,29 @@ static void once_fn(void *ctx) { (void)ctx; once_n++; }
 static int g_finalized = 0;
 static void finalizer(void *ctx) { (void)ctx; g_finalized++; }
 
+// The queue-specific key and value. The test compares only their addresses.
+// dispatch_queue_set_specific takes a non-const context, so sval is not const.
 static int skey;
-static int sval = 42;
+static int sval;
+
+// dispatch_apply runs the block this many times
+#define APPLY_COUNT 5
+
+// The data tests split MSG into "hello" and " dispatch", then take the word
+// "dispatch" back out of the joined data.
+static const char MSG[] = "hello dispatch";
+#define MSG_LEN (sizeof(MSG) - 1)
+#define MSG_SPLIT 5
+#define WORD_OFFSET 6
+#define WORD_LEN 8
+
+// The data source merges this value. Any nonzero value works.
+#define SOURCE_DATA 7
+
+// The one-shot timer fires after TIMER_DELAY. The final checks run
+// CHECK_DELAY after the timer, by the wall clock.
+#define TIMER_DELAY (20 * NSEC_PER_MSEC)
+#define CHECK_DELAY (30 * NSEC_PER_MSEC)
 
 int main(void)
 {
@@ -78,21 +100,22 @@ int main(void)
 	CHECK(barrier_ran, "dispatch_barrier_sync");
 
 	__block int applied = 0;
-	dispatch_apply(5, conc, ^(size_t i) { (void)i; applied++; });
-	CHECK(applied == 5, "dispatch_apply");
+	dispatch_apply(APPLY_COUNT, conc, ^(size_t i) { (void)i; applied++; });
+	CHECK(applied == APPLY_COUNT, "dispatch_apply");
 
-	const char *msg = "hello dispatch";
-	dispatch_data_t d1 = dispatch_data_create(msg, 5, NULL,
+	dispatch_data_t d1 = dispatch_data_create(MSG, MSG_SPLIT, NULL,
 			DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-	dispatch_data_t d2 = dispatch_data_create(msg + 5, strlen(msg) - 5, NULL,
-			DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+	dispatch_data_t d2 = dispatch_data_create(MSG + MSG_SPLIT,
+			MSG_LEN - MSG_SPLIT, NULL, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
 	dispatch_data_t cat = dispatch_data_create_concat(d1, d2);
-	CHECK(dispatch_data_get_size(cat) == strlen(msg), "dispatch_data_concat");
-	dispatch_data_t sub = dispatch_data_create_subrange(cat, 6, 8);
+	CHECK(dispatch_data_get_size(cat) == MSG_LEN, "dispatch_data_concat");
+	dispatch_data_t sub = dispatch_data_create_subrange(cat, WORD_OFFSET,
+			WORD_LEN);
 	const void *buf; size_t sz;
 	dispatch_data_t map = dispatch_data_create_map(sub, &buf, &sz);
 	(void)map;
-	CHECK(sz == 8 && !memcmp(buf, "dispatch", 8), "dispatch_data_subrange/map");
+	CHECK(sz == WORD_LEN && !memcmp(buf, "dispatch", WORD_LEN),
+			"dispatch_data_subrange/map");
 	__block size_t total = 0;
 	dispatch_data_apply(cat,
 			^bool(dispatch_data_t r, size_t off, const void *loc, size_t s) {
@@ -100,11 +123,13 @@ int main(void)
 		total += s;
 		return true;
 	});
-	CHECK(total == strlen(msg), "dispatch_data_apply");
+	CHECK(total == MSG_LEN, "dispatch_data_apply");
 	size_t roff;
-	dispatch_data_t reg = dispatch_data_copy_region(cat, 6, &roff);
+	dispatch_data_t reg = dispatch_data_copy_region(cat, WORD_OFFSET, &roff);
 	(void)reg;
 
+	// The created block adds 1 and the performed block adds 10. So the sum
+	// shows which block ran.
 	__block int block_n = 0;
 	dispatch_block_t blk = dispatch_block_create(0, ^{ block_n++; });
 	dispatch_block_perform(0, ^{ block_n += 10; });
@@ -121,7 +146,7 @@ int main(void)
 	dispatch_queue_t fq = dispatch_queue_create("v2.api.final",
 			DISPATCH_QUEUE_SERIAL);
 	dispatch_set_context(fq, (void *)"ctx");
-	CHECK(!strcmp((char *)dispatch_get_context(fq), "ctx"),
+	CHECK(!strcmp((const char *)dispatch_get_context(fq), "ctx"),
 			"dispatch_set/get_context");
 	dispatch_set_finalizer_f(fq, finalizer);
 	dispatch_release(fq);
@@ -153,7 +178,7 @@ int main(void)
 			source_registered = 1;
 		});
 		dispatch_source_set_event_handler(src, ^{
-			CHECK(dispatch_source_get_data(src) == 7,
+			CHECK(dispatch_source_get_data(src) == SOURCE_DATA,
 					"dispatch_source_get_data");
 			source_events++;
 			dispatch_source_set_cancel_handler(src, ^{
@@ -162,12 +187,12 @@ int main(void)
 				tim = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,
 						0, 0, serial);
 				dispatch_source_set_timer(tim,
-						dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC),
+						dispatch_time(DISPATCH_TIME_NOW, TIMER_DELAY),
 						DISPATCH_TIME_FOREVER, 0);
 				dispatch_source_set_event_handler(tim, ^{
 					dispatch_source_cancel(tim);
-					dispatch_after(dispatch_walltime(NULL,
-							30 * NSEC_PER_MSEC), serial, ^{
+					dispatch_after(dispatch_walltime(NULL, CHECK_DELAY),
+							serial, ^{
 						CHECK(inactive_ran, "initially_inactive+activate");
 						CHECK(resumed_ran, "dispatch_suspend/resume");
 						CHECK(g_finalized == 1, "dispatch_set_finalizer_f");
@@ -183,7 +208,7 @@ int main(void)
 			dispatch_source_cancel(src);
 		});
 		dispatch_resume(src);
-		dispatch_source_merge_data(src, 7);
+		dispatch_source_merge_data(src, SOURCE_DATA);
 	});
 	dispatch_main();
 }

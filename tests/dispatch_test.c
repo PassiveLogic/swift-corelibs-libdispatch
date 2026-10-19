@@ -108,8 +108,8 @@ dispatch_test_get_large_file(void)
 #if defined(__APPLE__)
 	return strdup("/usr/bin/vi");
 #elif defined(__wasi__)
-	// wasi-libc has no mkstemp ("WASI has no temp directories") and the
-	// dispatch IO tests that need a large file cannot run on WASI anyway
+	// wasi-libc has no mkstemp ("WASI has no temp directories"). The
+	// dispatch IO tests that need a large file do not run on WASI.
 	fprintf(stderr, "dispatch_test_get_large_file is unsupported on WASI\n");
 	abort();
 #elif defined(__unix__) || defined(_WIN32)

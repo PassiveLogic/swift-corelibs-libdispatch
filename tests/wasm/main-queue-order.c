@@ -19,13 +19,18 @@
  */
 
 /*
- * The thread-bound main queue drains in strict serial FIFO order,
- * interleaved with global-queue work, plus a main-queue timer.
+ * The thread-bound main queue drains in strict serial FIFO order. Global
+ * queue work and a main-queue timer run between the main-queue items.
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+
+// the number of main-queue items
+#define MAIN_STEPS 5
+// the delay of the timer that checks the result, after all items ran
+#define FINISH_DELAY (30 * NSEC_PER_MSEC)
 
 static int g_step = 0;
 static int g_violations = 0;
@@ -44,7 +49,7 @@ static void global_work(void *c) { (void)c; printf("global work ran\n"); }
 static void finish(void *c)
 {
 	(void)c;
-	if (g_step == 5 && !g_violations) {
+	if (g_step == MAIN_STEPS && !g_violations) {
 		printf("main queue order OK\n");
 		exit(0);
 	}
@@ -57,11 +62,11 @@ int main(void)
 	dispatch_queue_t mq = dispatch_get_main_queue();
 	dispatch_queue_t gq = dispatch_get_global_queue(
 			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-	for (intptr_t i = 0; i < 5; i++) {
+	for (intptr_t i = 0; i < MAIN_STEPS; i++) {
 		dispatch_async_f(mq, (void *)i, main_step);
 	}
 	dispatch_async_f(gq, NULL, global_work);
-	dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, 30 * NSEC_PER_MSEC),
+	dispatch_after_f(dispatch_time(DISPATCH_TIME_NOW, FINISH_DELAY),
 			mq, NULL, finish);
 	dispatch_main();
 }

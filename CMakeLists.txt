@@ -102,14 +102,12 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
-if(ANDROID)
+# wasi-libc provides pthread stubs directly. A static-library try_compile
+# cannot prove that by linking. With this result FindThreads takes the stubs
+# from libc and never adds -pthread, which would select the unsupported
+# threaded WASI ABI.
+if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "WASI")
   set(CMAKE_HAVE_LIBC_PTHREAD YES)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "WASI")
-  # wasi-libc provides pthread stubs directly. Static-library try_compile
-  # cannot prove that by linking, and -pthread selects the unsupported
-  # threaded ABI instead of the single-threaded wasip1 target.
-  set(CMAKE_HAVE_LIBC_PTHREAD YES CACHE BOOL "WASI pthread stubs are in libc")
-  set(THREADS_PREFER_PTHREAD_FLAG OFF)
 endif()
 find_package(Threads REQUIRED)
 
@@ -142,22 +140,31 @@ else()
   set(BUILD_SHARED_LIBS_DEFAULT ON)
 endif()
 option(BUILD_SHARED_LIBS "build shared libraries" ${BUILD_SHARED_LIBS_DEFAULT})
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  if(BUILD_SHARED_LIBS)
+    message(FATAL_ERROR "libdispatch supports only static libraries on WASI; set BUILD_SHARED_LIBS=OFF")
+  endif()
+  # The cooperative backend needs single-threaded wasm32-wasip1. Reject a
+  # threaded target (wasm atomics or -pthread) at configure time.
+  unset(DISPATCH_WASI_SINGLE_THREADED CACHE)
+  check_c_source_compiles("
+#if defined(__wasm_atomics__) || defined(_REENTRANT)
+#error threaded WASI target
+#endif
+int main(void) { return 0; }" DISPATCH_WASI_SINGLE_THREADED)
+  if(NOT DISPATCH_WASI_SINGLE_THREADED)
+    message(FATAL_ERROR "libdispatch on WASI supports only the single-threaded wasm32-wasip1 target")
+  endif()
+endif()
 
 option(DISPATCH_ENABLE_ASSERTS "enable debug assertions" FALSE)
 
 option(ENABLE_DISPATCH_INIT_CONSTRUCTOR "enable libdispatch_init as a constructor" ON)
 set(USE_LIBDISPATCH_INIT_CONSTRUCTOR ${ENABLE_DISPATCH_INIT_CONSTRUCTOR})
 
-if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
-  set(ENABLE_DTRACE_DEFAULT OFF)
-else()
-  set(ENABLE_DTRACE_DEFAULT "")
-endif()
-option(ENABLE_DTRACE "enable dtrace support" "${ENABLE_DTRACE_DEFAULT}")
+option(ENABLE_DTRACE "enable dtrace support" "")
 
-if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
-  set(ENABLE_INTERNAL_PTHREAD_WORKQUEUES_DEFAULT ON)
-elseif(APPLE OR BSD)
+if(APPLE OR BSD)
   set(ENABLE_INTERNAL_PTHREAD_WORKQUEUES_DEFAULT OFF)
 else()
   set(ENABLE_INTERNAL_PTHREAD_WORKQUEUES_DEFAULT ON)
@@ -187,10 +194,12 @@ endif()
 option(ENABLE_THREAD_LOCAL_STORAGE "enable usage of thread local storage via _Thread_local" ON)
 set(DISPATCH_USE_THREAD_LOCAL_STORAGE ${ENABLE_THREAD_LOCAL_STORAGE})
 
-if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
-  # CMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY makes link-dependent checks
-  # compile-only. These values are the exported-symbol set of Swift 6.3.2's
-  # single-threaded wasip1 libc.a; cache entries remain caller-overridable.
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI" AND
+   CMAKE_TRY_COMPILE_TARGET_TYPE STREQUAL "STATIC_LIBRARY")
+  # A STATIC_LIBRARY try_compile cannot link, so the function checks below
+  # would pass for every declared function. These cache values give the
+  # result for the single-threaded wasip1 wasi-libc instead. A configure
+  # that can link runs the real checks. Callers can override each value.
   set(HAVE__PTHREAD_WORKQUEUE_INIT 0 CACHE BOOL "WASI libc result")
   set(HAVE_GETPROGNAME 0 CACHE BOOL "WASI libc result")
   set(HAVE_MACH_ABSOLUTE_TIME 0 CACHE BOOL "WASI libc result")
@@ -207,7 +216,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
   set(HAVE_STRLCPY 1 CACHE BOOL "WASI libc result")
   set(HAVE_SYSCONF 1 CACHE BOOL "WASI libc result")
   set(HAVE_ARC4RANDOM 1 CACHE BOOL "WASI libc result")
-  set(USE_POSIX_SEM 0 CACHE BOOL "WASI libc result")
 endif()
 
 
@@ -286,6 +294,10 @@ check_library_exists(pthread sem_init "" USE_POSIX_SEM)
 # NOTE: android has not always provided a libpthread, but uses the pthreads API
 if(ANDROID)
   set(USE_POSIX_SEM 1)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  # WASI uses its own counter semaphore. shims/lock.h tests USE_POSIX_SEM
+  # before its __wasi__ arm, so a libc that has sem_init must not win.
+  set(USE_POSIX_SEM 0)
 endif()
 
 check_symbol_exists(CLOCK_UPTIME "time.h" HAVE_DECL_CLOCK_UPTIME)

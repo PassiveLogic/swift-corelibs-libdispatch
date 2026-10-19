@@ -4,7 +4,6 @@ module Dispatch {
 	link "dispatch"
 	link "BlocksRuntime"
 	link "wasi-emulated-signal"
-	link "wasi-emulated-mman"
 	link "wasi-emulated-getpid"
 }
 
@@ -22,6 +21,5 @@ module CDispatch [system] [extern_c] {
 	// in the WASI module map so generic Linux and Windows clients are unchanged.
 	link "BlocksRuntime"
 	link "wasi-emulated-signal"
-	link "wasi-emulated-mman"
 	link "wasi-emulated-getpid"
 }

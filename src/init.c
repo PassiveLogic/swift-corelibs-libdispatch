@@ -51,7 +51,21 @@
 
 
 #if USE_LIBDISPATCH_INIT_CONSTRUCTOR
+#if defined(__wasi__)
+// Priority 101 makes libdispatch ready before default-priority client
+// constructors, as a shared libdispatch is on other platforms. WASI links
+// libdispatch statically. wasm-ld runs default-priority constructors in
+// link order, so a client constructor could run first and see an unbound
+// main queue. 101 is the earliest priority open to code outside the
+// implementation.
+//
+// A client constructor at priority 101 or lower can run before this one.
+// It must not use Dispatch. The main queue is not bound to the thread yet,
+// so its work would run as ordinary serial-queue work.
+DISPATCH_NOTHROW __attribute__((constructor(101)))
+#else
 DISPATCH_NOTHROW __attribute__((constructor))
+#endif
 void
 _libdispatch_init(void);
 
@@ -895,8 +909,8 @@ _dispatch_get_build(void)
 }
 
 #if defined(__wasi__)
-// WebAssembly has not implemented __builtin_return_address; losing the
-// repeated-log suppression only makes bug logs noisier
+// WebAssembly has no __builtin_return_address. Without it, repeated bug
+// logs are not suppressed. The only cost is noisier logs.
 #define _dispatch_bug_log_is_repeated() false
 #else
 #define _dispatch_bug_log_is_repeated() ({ \
@@ -1269,7 +1283,7 @@ _dispatch_vsyslog(const char *msg, va_list ap)
 static inline void
 _dispatch_syslog(const char *msg)
 {
-	// WASI has no syslog; log to stderr
+	// WASI has no syslog. Log to stderr.
 	fprintf(stderr, "%s\n", msg);
 }
 
@@ -1323,6 +1337,21 @@ _dispatch_log(const char *msg, ...)
 	_dispatch_logv(msg, 0, &ap);
 	va_end(ap);
 }
+
+#if defined(__wasi__)
+DISPATCH_NOINLINE DISPATCH_COLD
+void
+_dispatch_wasi_crash_log_dynamic(const char *msg)
+{
+	// Write msg again only when LIBDISPATCH_LOG disabled the log or sent it
+	// to a file. The only caller, _dispatch_assert_crash(), already sent msg
+	// through _dispatch_log(), which initialized the log state.
+	if (dispatch_log_disabled || (dispatch_logfile != -1 &&
+			dispatch_logfile != STDERR_FILENO)) {
+		fprintf(stderr, "%s\n", msg);
+	}
+}
+#endif // defined(__wasi__)
 
 #endif // DISPATCH_USE_OS_DEBUG_LOG
 
@@ -1407,8 +1436,15 @@ DISPATCH_NOINLINE
 void
 _dispatch_temporary_resource_shortage(void)
 {
+#if defined(__wasi__)
+	// No other WASI thread can free memory while this one sleeps. Thus the
+	// allocation retry of the caller can never succeed.
+	DISPATCH_CLIENT_CRASH(0, "Out of memory: allocation cannot be "
+			"retried on single-threaded WASI");
+#else
 	sleep(1);
 	__asm__ __volatile__("");  // prevent tailcall
+#endif
 }
 
 void *

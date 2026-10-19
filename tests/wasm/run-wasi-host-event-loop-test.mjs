@@ -38,6 +38,7 @@ async function runGuest(binary, inlineSchedule) {
       timer = null;
     }
     if (delayNs === -1n) return;
+    // round the delay up to whole milliseconds
     const delayMs = Number((delayNs + 999999n) / 1000000n);
     timer = setTimeout(() => {
       timer = null;
@@ -250,6 +251,42 @@ async function runTimerRaceGuest(binary) {
   console.log('timer perform preserved scheduled turn');
 }
 
+// A serial queue that re-posts to itself must not hold a perform call: each
+// one-phase perform advances the lane by at most one item, and a LOW global
+// item runs while the lane is still busy.
+async function runSerialLaneGuest(binary) {
+  const wasi = new WASI({ version: 'preview1', args: [binary], env: {} });
+  let scheduledTurns = 0;
+  const imports = wasi.getImportObject();
+  imports.dispatch_host = { schedule() { scheduledTurns++; } };
+  const module = await WebAssembly.compile(await readFile(binary));
+  const instance = await WebAssembly.instantiate(module, imports);
+  wasi.initialize(instance);
+  const e = instance.exports;
+  e.host_event_loop_initialize();
+  if (e.host_event_loop_submit_serial_lane() !== 0) {
+    throw new Error('serial lane ran before submission returned');
+  }
+  let moreWork = true;
+  let calls = 0;
+  while (moreWork) {
+    if (++calls > 1000) throw new Error('serial lane did not finish');
+    const before = e.host_event_loop_serial_lane_count();
+    moreWork = e.host_event_loop_perform() !== 0;
+    const advanced = e.host_event_loop_serial_lane_count() - before;
+    if (advanced > 1) {
+      throw new Error(`one perform step ran ${advanced} serial lane items`);
+    }
+  }
+  const lowSeenAt = e.host_event_loop_serial_lane_low_seen_at();
+  if (e.host_event_loop_serial_lane_count() !== 100 || lowSeenAt < 0 ||
+      lowSeenAt >= 100) {
+    throw new Error(`serial lane count=${e.host_event_loop_serial_lane_count()} ` +
+        `low item ran at ${lowSeenAt}`);
+  }
+  console.log(`serial lane advanced one item per step calls=${calls}`);
+}
+
 const [modeOrBinary, maybeBinary] = process.argv.slice(2);
 if (!modeOrBinary) {
   console.error('usage: run-wasi-host-event-loop-test.mjs [mode] <binary>');
@@ -266,6 +303,8 @@ if (!modeOrBinary) {
   await runRegisterInDrainGuest(maybeBinary);
 } else if (modeOrBinary === '--timer-race') {
   await runTimerRaceGuest(maybeBinary);
+} else if (modeOrBinary === '--serial-lane') {
+  await runSerialLaneGuest(maybeBinary);
 } else {
   await runGuest(modeOrBinary, false);
 }

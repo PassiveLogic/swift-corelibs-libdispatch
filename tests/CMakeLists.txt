@@ -1,7 +1,7 @@
 if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
-  # Command used to execute .wasm test binaries; may be a semicolon-separated
-  # list (e.g. "wasmtime;--some-flag"). The runner must propagate the guest's
-  # exit code, which any WASI CLI runtime does.
+  # The command that runs the .wasm test binaries. It can be a CMake list,
+  # for example "wasmtime;--some-flag". The runner must return the exit code
+  # of the guest. All WASI CLI runtimes do.
   set(WASI_TEST_RUNNER "wasmtime" CACHE STRING
       "Command (semicolon-separated list) used to execute WASI test binaries")
   list(GET WASI_TEST_RUNNER 0 _wasi_test_runner_program)
@@ -40,6 +40,10 @@ add_library(bsdtests
               dispatch_test.c)
 target_link_libraries(bsdtests PUBLIC
   dispatch)
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  # The harness logs the process id. libdispatch links the getpid emulation.
+  target_compile_definitions(bsdtests PRIVATE _WASI_EMULATED_GETPID)
+endif()
 target_include_directories(bsdtests
                            PRIVATE
                              ${CMAKE_CURRENT_BINARY_DIR}
@@ -62,8 +66,8 @@ if (WIN32)
                           bcrypt)
 endif ()
 
-# bsdtestharness requires posix_spawn, which does not exist on WASI; the
-# WASI unit tests are executed directly by ${WASI_TEST_RUNNER} instead.
+# bsdtestharness needs posix_spawn, which WASI does not have. So
+# ${WASI_TEST_RUNNER} runs the WASI unit tests directly.
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "WASI")
   add_executable(bsdtestharness
                  bsdtestharness.c)
@@ -123,15 +127,6 @@ function(add_unit_test name)
                           BlocksRuntime::BlocksRuntime)
   target_link_libraries(${name} PRIVATE bsdtests)
   if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
-    # The toolchain's default compiler runtime is not built for wasm32;
-    # link libc and the WASI builtins archive explicitly, mirroring the
-    # link strategy of the dispatch library itself (see tests/wasm).
-    target_link_options(${name} PRIVATE
-      -nodefaultlibs
-      "$<$<LINK_LANGUAGE:CXX>:-lc++>"
-      "$<$<LINK_LANGUAGE:CXX>:-lc++abi>"
-      -lc
-      "${DISPATCH_WASI_BUILTINS}")
     add_test(NAME ${name}
              COMMAND ${WASI_TEST_RUNNER} $<TARGET_FILE:${name}>)
     set_tests_properties(${name}
@@ -159,16 +154,16 @@ endfunction()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
   # The subset of the default C test suite that runs on single-threaded
-  # WASI. The other default tests are incompatible with a single thread:
-  #   apply - keeps worker threads spinning concurrently with dispatch_apply
-  #   overcommit - spins (while(1)) in every work item but the last, so it
-  #       needs concurrent worker threads to reach the one that stops it
-  #   context_for_key - blocks in dispatch_group_wait() inside a work item,
-  #       which the single-threaded port rejects as a guaranteed deadlock
-  #   timer_timeout - blocks the sole thread in sleep() and expects timers
-  #       to fire concurrently on worker threads meanwhile
-  #   io_muxed, io_net, io_pipe, io_pipe_close, select - file-descriptor
-  #       dispatch sources are unsupported on single-threaded WASI
+  # WASI. The other default tests need more than one thread:
+  #   apply: keeps worker threads spinning while dispatch_apply runs
+  #   overcommit: spins (while(1)) in every work item but the last, so it
+  #       needs concurrent worker threads to reach the item that stops it
+  #   context_for_key: blocks in dispatch_group_wait() inside a work item.
+  #       The single-threaded port rejects that as a certain deadlock.
+  #   timer_timeout: blocks the sole thread in sleep() and expects timers
+  #       to fire on worker threads meanwhile
+  #   io_muxed, io_net, io_pipe, io_pipe_close, select: single-threaded
+  #       WASI does not support file-descriptor dispatch sources
   set(DISPATCH_C_TESTS
       api
       debug

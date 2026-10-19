@@ -107,16 +107,18 @@ elseif(ANDROID)
   target_compile_options(dispatch PRIVATE
     -U_GNU_SOURCE)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  # wasip1 has one thread, so build as a uniprocessor. DISPATCH_HW_CONFIG_UP
+  # drops cache-line padding and spin loops. event_wasi.c rejects threaded
+  # targets.
   target_compile_definitions(dispatch PRIVATE
-    DISPATCH_HW_CONFIG_UP=1)
-  target_compile_definitions(dispatch PUBLIC
-    "$<$<COMPILE_LANGUAGE:C,CXX>:_WASI_EMULATED_SIGNAL>"
+    DISPATCH_HW_CONFIG_UP=1
     "$<$<COMPILE_LANGUAGE:C,CXX>:_WASI_EMULATED_MMAN>"
     "$<$<COMPILE_LANGUAGE:C,CXX>:_WASI_EMULATED_GETPID>")
+  # dispatch/source.h includes <signal.h> when signal emulation is on
+  target_compile_definitions(dispatch PUBLIC
+    "$<$<COMPILE_LANGUAGE:C,CXX>:_WASI_EMULATED_SIGNAL>")
   target_compile_options(dispatch INTERFACE
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -D_WASI_EMULATED_SIGNAL>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -D_WASI_EMULATED_MMAN>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -D_WASI_EMULATED_GETPID>")
+    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -D_WASI_EMULATED_SIGNAL>")
 endif()
 if(DISPATCH_ENABLE_ASSERTS)
   target_compile_definitions(dispatch PRIVATE
@@ -167,7 +169,6 @@ target_link_libraries(dispatch PUBLIC
 if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
   target_link_libraries(dispatch PUBLIC
     wasi-emulated-signal
-    wasi-emulated-mman
     wasi-emulated-getpid)
 endif()
 if(WIN32)
