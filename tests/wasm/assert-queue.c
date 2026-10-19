@@ -19,14 +19,16 @@
  */
 
 /*
- * dispatch_assert_queue correctness. The lock-owner encoding must keep the
- * sole thread's tid distinct from DLOCK_OWNER_NULL after DLOCK_OWNER_MASK
- * (see _dispatch_tid_self in shims/lock.h); if the tid masks to zero, every
- * unlocked queue looks owned by the current thread, dispatch_assert_queue
- * silently passes off-queue, and dispatch_assert_queue_not traps spuriously.
+ * dispatch_assert_queue must find the correct queue owner on the sole WASI
+ * thread. After DLOCK_OWNER_MASK, the thread id must stay different from
+ * DLOCK_OWNER_NULL (see _dispatch_tid_self in src/shims/lock.h). If the
+ * masked id is zero, every unlocked queue looks owned by the current thread.
+ * Then dispatch_assert_queue passes off-queue, and dispatch_assert_queue_not
+ * traps on a correct call.
  *
- * Expected behavior verified here:
- *  - on-queue:  dispatch_assert_queue passes, off-queue assert_queue_not passes
+ * The test checks two cases:
+ *  - on-queue: dispatch_assert_queue passes, and dispatch_assert_queue_not
+ *    passes for a different queue
  *  - off-queue: dispatch_assert_queue traps with the standard diagnostic
  */
 #include <dispatch/dispatch.h>

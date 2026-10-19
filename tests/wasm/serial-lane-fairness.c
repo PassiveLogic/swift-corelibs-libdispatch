@@ -32,7 +32,11 @@
 #include <stdlib.h>
 #include <time.h>
 
+// The test fails when a phase runs longer than this. A fair drain finishes
+// each phase soon after its 10 ms timer fires.
 #define LANE_TIME_LIMIT_NS (2 * NSEC_PER_SEC)
+// The lane reads the clock once every 4096 items, to keep each item cheap.
+#define CLOCK_CHECK_MASK 0xfff
 
 static dispatch_queue_t lane;
 static int phase;
@@ -75,7 +79,7 @@ lane_item(void *context)
 		puts("serial lane fairness OK");
 		exit(0);
 	}
-	if ((lane_count & 0xfff) == 0 &&
+	if ((lane_count & CLOCK_CHECK_MASK) == 0 &&
 			now_ns() - phase_start_ns > LANE_TIME_LIMIT_NS) {
 		printf("FAIL: phase %d lane held the thread for %lu items: "
 				"timer=%d low=%d main=%d\n", phase, lane_count,

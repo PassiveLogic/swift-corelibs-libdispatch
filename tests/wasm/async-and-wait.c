@@ -19,20 +19,20 @@
  */
 
 /*
- * dispatch_async_and_wait runs its workitem inline on the calling thread
- * (with the queue's width/barrier acquired) whenever the queue hierarchy
- * allows. Work submitted from inside the body must not run on that stack:
- * it runs at the next pump point, after the wait has released the queue.
- * Both entry shapes are covered:
+ * Work submitted from a dispatch_async_and_wait body must not run on the
+ * stack of that body. It runs at the next pump point, after the wait
+ * releases the queue. The body itself runs inline on the calling thread,
+ * with the queue width or barrier held, when the queue hierarchy allows.
+ * The test covers both entry paths:
  *
- *  - a plain block funnels through _dispatch_async_and_wait_f
- *  - a dispatch_block_create() (private-data) block takes a separate funnel,
- *    _dispatch_async_and_wait_block_with_privdata, whose recurse runs inside
- *    the _dispatch_fake_wlh ANON region; a block that ran there would die
- *    with the internal-bug crash "Lingering DISPATCH_WLH_ANON". Swift
- *    reaches this path via DispatchQueue.asyncAndWait(execute:).
+ *  - A plain block goes through _dispatch_async_and_wait_f.
+ *  - A dispatch_block_create() block (private data) goes through
+ *    _dispatch_async_and_wait_block_with_privdata. Its recurse step runs
+ *    inside the _dispatch_fake_wlh ANON region. A block that ran there would
+ *    crash with the internal error "Lingering DISPATCH_WLH_ANON". Swift
+ *    takes this path through DispatchQueue.asyncAndWait(execute:).
  *
- * After each return a contended dispatch_sync on qb pumps the queued block.
+ * After each return, a contended dispatch_sync on qb pumps the queued block.
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
@@ -54,8 +54,8 @@ main(void)
 	__block int nested_done = 0;
 	__block int barrier_done = 0;
 
-	// control: the plain-block funnel; the nested sync-back runs at the
-	// pump, after the inline invoke released qa
+	// control: the plain-block path. The nested sync-back runs at the pump,
+	// after the inline call released qa.
 	dispatch_async_and_wait(qa, ^{
 		dispatch_async(qb, ^{
 			dispatch_sync(qa, ^{ plain_done = 1; });
@@ -71,8 +71,8 @@ main(void)
 		exit(1);
 	}
 
-	// privdata, benign body: a lone dispatch_async inside the block must
-	// not run inside the fake-ANON wlh region
+	// privdata, simple body: a single dispatch_async inside the block must
+	// not run inside the fake ANON wlh region
 	dispatch_block_t benign = dispatch_block_create(0, ^{
 		dispatch_async(qb, ^{ benign_done = 1; });
 	});
@@ -96,7 +96,7 @@ main(void)
 		exit(1);
 	}
 
-	// privdata through the barrier entry point (same funnel)
+	// privdata through the barrier entry point (the same path)
 	dispatch_block_t barrier = dispatch_block_create(0, ^{
 		dispatch_async(qb, ^{ barrier_done = 1; });
 	});

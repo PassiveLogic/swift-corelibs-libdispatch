@@ -267,8 +267,8 @@ void _dispatch_sema4_init(_dispatch_sema4_t *sema, int policy);
 
 #elif defined(__wasi__)
 
-// Single-threaded WASI: a plain counter; waiters make progress by
-// cooperatively draining pending dispatch work instead of blocking
+// Single-threaded WASI uses a plain counter. A waiter does not block. It
+// drains pending dispatch work until a signal arrives.
 typedef uint32_t _dispatch_sema4_t;
 #define _DSEMA4_POLICY_FIFO 0
 #define _DSEMA4_POLICY_LIFO 0
@@ -283,64 +283,63 @@ typedef uint32_t _dispatch_sema4_t;
 #endif
 
 #if defined(__wasi__)
-// The sole WASI thread uses two lock owner ids. Code outside any drain and
-// main-queue drains run as DISPATCH_WASI_MAIN_TID, the owner of the
-// thread-bound main queue. A root-queue drain turn runs as
-// DISPATCH_WASI_WORKER_TID, as a worker thread would (see
-// _dispatch_wasi_root_queue_drain). So a work item that a top-level wait
-// pumps does not inherit the main queue, or the queue drain locks and once
-// gates that the interrupted frame holds. _dispatch_tid_self() shifts each
-// id left by 2, clear of the low flag bits in DLOCK_OWNER_MASK.
+// The sole WASI thread uses two lock owner ids. This prevents a work item
+// that a top-level wait runs from inheriting the main queue, or the drain
+// locks and once gates of the interrupted frame.
+// - DISPATCH_WASI_MAIN_TID owns the thread-bound main queue. Code outside
+//   any drain and main-queue drains use it.
+// - DISPATCH_WASI_WORKER_TID is for a root-queue drain turn, as a worker
+//   thread would use (see _dispatch_wasi_root_queue_drain).
+// _dispatch_tid_self() shifts each id left by 2, clear of the low flag bits
+// in DLOCK_OWNER_MASK.
 #define DISPATCH_WASI_MAIN_TID			((pid_t)1)
 #define DISPATCH_WASI_WORKER_TID		((pid_t)2)
 
-// Cooperative drain support for single-threaded WASI, implemented in
-// src/event/event_wasi.c: blocking waits drain pending dispatch work and
-// timers instead of blocking the sole thread.
-//
-// Runs one drain step for a blocking-wait loop and returns true if the step
-// did work. A step is one of: a merge of due timers, one manager queue drain,
-// or one item from a global root queue. A due dispatch timer counts as work
-// and makes this return true; otherwise the wait loops below would busy-spin
-// instead of firing it.
+// Cooperative drain support for single-threaded WASI, in
+// src/event/event_wasi.c. A blocking wait drains pending work and timers
+// instead of blocking the sole thread.
+
+// Runs one drain step for a blocking-wait loop. Returns true if the step did
+// work. A step is a merge of due timers, one manager queue drain, or one
+// item from a global root queue. A due timer counts as work. Otherwise a
+// wait loop would spin instead of firing the timer.
 //
 // The step never drains the thread-bound main queue. As on Darwin and Linux,
-// main-queue work does not run while main-thread code is blocked in a wait.
-// Only dispatch_main() and a host event loop turn drain the main queue.
+// main-queue work does not run while main-thread code waits. Only
+// dispatch_main() and a host event loop turn drain the main queue.
 //
-// One step can run more than one client block: a root item that is a serial
-// queue runs a drain of that queue. A timed wait can therefore return late
-// by the run time of one step.
+// One step can run more than one client block. For example, a root item
+// that is a serial queue runs a drain of that queue. Thus a timed wait can
+// return late by the run time of one step.
 bool _dispatch_wasi_drain_one(void);
 // Returns true while main-queue work is pending. A blocking wait cannot run
-// that work, so the wait loops use this to name the deadlock.
+// that work. The wait loops use this to name the deadlock.
 bool _dispatch_wasi_main_queue_pending(void);
-// Returns true while the cooperative drain is running a work item. Nested
-// blocking waits can never be satisfied by more work: draining is refused
-// while nested, so neither queued items nor due timers can run. Wait loops
-// must therefore crash immediately on an indefinite nested wait, and sleep
-// toward their own deadline only (never toward a timer) on a timed nested
-// wait.
+// Returns true while the cooperative drain runs a work item. Drains do not
+// nest, so no queued item or due timer can run under a nested wait. Thus an
+// indefinite nested wait must crash at once. A timed nested wait sleeps to
+// its own deadline only, never to a timer.
 bool _dispatch_wasi_in_drain(void);
-// Returns the uptime deadline of the nearest armed dispatch timer, in the
-// _dispatch_uptime() clock domain; 0 means no timer is armed.
+// Returns the deadline of the nearest armed dispatch timer, in the
+// _dispatch_uptime() clock domain. Returns 0 when no timer is armed.
 uint64_t _dispatch_wasi_next_timer_ns(void);
-// Sleeps until the given _dispatch_uptime() deadline; returns immediately
-// if the deadline is already past.
+// Sleeps until the given _dispatch_uptime() deadline. Returns at once if
+// the deadline is past, or if the runtime cannot sleep.
 void _dispatch_wasi_sleep_until(uint64_t uptime_ns);
-// Returns true when progress can come from an event source rather than a
-// timer or queued work: an armed file-descriptor source (pollable or
-// always-ready) or an already-raised emulated signal. Armed-but-idle signal
-// sources do not count: nothing can raise() while the sole thread is parked.
+// Returns true when an event source can make progress, not only a timer or
+// queued work. An event source is an armed file-descriptor source (pollable
+// or always ready) or an emulated signal that was already raised. An idle
+// armed signal source does not count, because nothing can call raise() while
+// the sole thread is parked.
 bool _dispatch_wasi_has_event_sources(void);
-// Waits until the given uptime deadline or until an armed event source
-// produces work, whichever is first; merged events queue their handlers for
-// the caller's next drain. deadline 0 waits for events alone and requires
-// _dispatch_wasi_has_event_sources() to be true.
+// Waits until the given uptime deadline or until an armed event source makes
+// work, whichever comes first. Merged events queue their handlers for the
+// next drain of the caller. A deadline of 0 waits for events only. Then
+// _dispatch_wasi_has_event_sources() must be true.
 void _dispatch_wasi_wait_for_events(uint64_t deadline_uptime_ns);
-// The call that blocked, for the deadlock diagnostics of the WASI wait loop
-// in _dispatch_wait_on_address. The semaphore waits and dispatch_sync pass
-// one of these in the flags argument. dispatch_group_wait,
+// Names the call that blocked, for the deadlock messages of the WASI wait
+// loop in _dispatch_wait_on_address. The semaphore waits and dispatch_sync
+// pass one of these in the flags argument. dispatch_group_wait,
 // dispatch_block_wait, and dispatch_source_cancel_and_wait pass none.
 #define DLOCK_WASI_WAITER_MASK			((dispatch_lock_options_t)0x00300000)
 #define DLOCK_WASI_WAITER_SEMAPHORE		((dispatch_lock_options_t)0x00100000)

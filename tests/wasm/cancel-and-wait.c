@@ -18,11 +18,13 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
-// Pins the boundary of dispatch_source_cancel_and_wait on single-threaded
-// WASI. From top level, a timer source cancels: the wait pumps the manager
-// queue until it unregisters the source. From inside a work item, a source
-// that cancels inline (a DATA_ADD source on an idle queue) needs no wait and
-// returns. wait-diagnostics.c pins the timer case inside a work item, which
+// dispatch_source_cancel_and_wait returns in two cases on single-threaded
+// WASI:
+//  - At top level, a timer source cancels. The wait pumps the manager queue
+//    until the manager unregisters the source.
+//  - Inside a work item, a source that cancels inline needs no wait. A
+//    DATA_ADD source on an idle queue is such a source.
+// wait-diagnostics.c covers a timer source inside a work item. That case
 // crashes with a named diagnostic.
 
 #include <dispatch/dispatch.h>
@@ -38,6 +40,7 @@ main(void)
 	dispatch_queue_t queue = dispatch_queue_create("wasi.cancel.wait", NULL);
 	dispatch_source_t timer = dispatch_source_create(
 			DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+	// 60 s: the timer must not fire during the test
 	dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW,
 			60 * NSEC_PER_SEC), DISPATCH_TIME_FOREVER, 0);
 	dispatch_source_set_event_handler(timer, ^{});

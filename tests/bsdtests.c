@@ -541,7 +541,7 @@ test_stop_after_delay(void *delay)
 
 	fflush(stdout);
 #if defined(__wasi__)
-	// WASI requires exit statuses in [0..126); 0xff would trap in proc_exit
+	// WASI accepts exit statuses below 126 only. 0xff traps in proc_exit.
 	_exit(_test_exit_code ? EXIT_FAILURE : EXIT_SUCCESS);
 #else
 	_exit(_test_exit_code);

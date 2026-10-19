@@ -15,10 +15,10 @@ async function runGuest(binary, guestOpts) {
   const importObject = wasi.getImportObject();
   let memory = null;
   if (guestOpts.denyFdPoll) {
-    // Emulate a limited host (browser WASI shims): reject poll_oneoff calls
-    // carrying fd_read/fd_write subscriptions with ENOTSUP, pass clock-only
-    // sets through. Preview1 subscriptions are 48 bytes with the union tag
-    // at byte 8 (0 = clock).
+    // Emulate a limited host, such as a browser WASI shim. Reject a
+    // poll_oneoff call that has an fd_read or fd_write subscription with
+    // ENOTSUP. Pass clock-only sets through. A preview1 subscription is 48
+    // bytes, with the union tag at byte 8 (0 = clock).
     const preview1 = importObject.wasi_snapshot_preview1;
     const realPoll = preview1.poll_oneoff;
     preview1.poll_oneoff = (inPtr, outPtr, nsubscriptions, neventsPtr) => {
@@ -32,11 +32,10 @@ async function runGuest(binary, guestOpts) {
     };
   }
   if (guestOpts.fdPollEbadfAfter !== null) {
-    // Emulate wasmtime's close-while-armed shape: when an fd in the poll
-    // set is no longer open, the whole poll_oneoff call fails with BADF
-    // (rather than reporting a per-subscription error). Let the first n
-    // fd-carrying polls through (the registration capability probe), then
-    // fail every later one.
+    // Emulate wasmtime when an armed fd closes. If an fd in the poll set is
+    // no longer open, the whole poll_oneoff call fails with BADF. It does
+    // not set an error on that one subscription. Let the first n polls with
+    // an fd through (the registration capability probe). Fail each later one.
     const preview1 = importObject.wasi_snapshot_preview1;
     const realPoll = preview1.poll_oneoff;
     let fdPolls = 0;
@@ -53,11 +52,11 @@ async function runGuest(binary, guestOpts) {
     };
   }
   if (guestOpts.suppressPollHangup) {
-    // Emulate a host that never reports FD_READWRITE_HANGUP (wasmtime 47
-    // for pipes, empirically): EOF then shows up only as permanent
-    // readable-with-nothing readiness. Preview1 events are 32 bytes:
+    // Emulate a host that never reports FD_READWRITE_HANGUP. wasmtime 47
+    // does this for pipes (observed, not documented). EOF then shows only as
+    // an fd that stays readable with no data. A preview1 event is 32 bytes:
     // userdata u64 @0, error u16 @8, type u8 @10, fd_readwrite
-    // { nbytes u64 @16, flags u16 @24 }; hangup is flags bit 0x1.
+    // { nbytes u64 @16, flags u16 @24 }. Hangup is flags bit 0x1.
     const preview1 = importObject.wasi_snapshot_preview1;
     const realPoll = preview1.poll_oneoff;
     preview1.poll_oneoff = (inPtr, outPtr, nsubscriptions, neventsPtr) => {
@@ -103,14 +102,15 @@ async function runGuest(binary, guestOpts) {
     process.exitCode = wasi.start(instance);
   } catch (error) {
     console.error(`[trap] ${error.message}`);
+    // 134 = 128 + SIGABRT, the status of a native abort()
     process.exitCode = 134;
   }
 }
 
 async function runChecked(...argv) {
-  // --stdin-after <ms>:<text> pipes <text> to the guest's stdin after a
-  // delay, so readiness-driven tests prove the guest genuinely parks in the
-  // host poll instead of finding data already buffered.
+  // --stdin-after <ms>:<text> sends <text> to the guest stdin after a delay.
+  // So a readiness test proves that the guest parks in the host poll, and
+  // does not find data already buffered.
   let stdinAfter = null;
   const guestFlags = [];
   for (;;) {

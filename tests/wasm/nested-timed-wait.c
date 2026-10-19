@@ -18,17 +18,26 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
+/*
+ * A timed semaphore wait inside a drained work item does not crash. It
+ * waits for its full timeout, then reports a timeout. A far-future timer
+ * stays armed meanwhile.
+ */
 #include <dispatch/dispatch.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <time.h>
+
+// the timeout of the nested wait
+#define WAIT_MS 200
 
 static uint64_t
 now_ms(void)
 {
 	struct timespec time;
 	clock_gettime(CLOCK_MONOTONIC, &time);
-	return (uint64_t)time.tv_sec * 1000 + (uint64_t)time.tv_nsec / 1000000;
+	return ((uint64_t)time.tv_sec * NSEC_PER_SEC + (uint64_t)time.tv_nsec) /
+			NSEC_PER_MSEC;
 }
 
 int
@@ -38,13 +47,14 @@ main(void)
 	dispatch_queue_t queue = dispatch_queue_create("wasi.nested.timed", NULL);
 	dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
 	dispatch_semaphore_t done = dispatch_semaphore_create(0);
+	// 10 s: the timer stays armed for the whole test
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), queue, ^{});
 	dispatch_async(queue, ^{
 		uint64_t start = now_ms();
 		long result = dispatch_semaphore_wait(semaphore,
-				dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC));
+				dispatch_time(DISPATCH_TIME_NOW, WAIT_MS * NSEC_PER_MSEC));
 		uint64_t elapsed = now_ms() - start;
-		passed = result != 0 && elapsed >= 200;
+		passed = result != 0 && elapsed >= WAIT_MS;
 		dispatch_semaphore_signal(done);
 	});
 	// top-level wait: pumps the queued item

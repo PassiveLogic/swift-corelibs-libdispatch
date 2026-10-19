@@ -19,15 +19,30 @@
  */
 
 /*
- * A barrier submitted between two concurrent-queue items orders them: the
- * final barrier observes all three, then exits from inside dispatch_main().
+ * A barrier between two concurrent-queue items keeps them in order. The
+ * final barrier checks all three items, then exits from inside
+ * dispatch_main().
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
 #include <stdlib.h>
 
+#define STEP_COUNT 3
+
 static int count;
-static int order[3];
+static int order[STEP_COUNT];
+
+// Records one step. The bounds check stops an extra step from writing past
+// the end of order.
+static void
+record(int step)
+{
+	if (count >= STEP_COUNT) {
+		printf("FAIL: more than %d steps\n", STEP_COUNT);
+		exit(1);
+	}
+	order[count++] = step;
+}
 
 int
 main(void)
@@ -35,11 +50,11 @@ main(void)
 	dispatch_queue_t queue = dispatch_queue_create("wasi.barrier",
 			DISPATCH_QUEUE_CONCURRENT);
 	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-		dispatch_async(queue, ^{ order[count++] = 1; });
-		dispatch_barrier_async(queue, ^{ order[count++] = 2; });
-		dispatch_async(queue, ^{ order[count++] = 3; });
+		dispatch_async(queue, ^{ record(1); });
+		dispatch_barrier_async(queue, ^{ record(2); });
+		dispatch_async(queue, ^{ record(3); });
 		dispatch_barrier_async(queue, ^{
-			if (count != 3 || order[0] != 1 || order[1] != 2 ||
+			if (count != STEP_COUNT || order[0] != 1 || order[1] != 2 ||
 					order[2] != 3) {
 				printf("FAIL: count=%d order=%d,%d,%d\n", count, order[0],
 						order[1], order[2]);

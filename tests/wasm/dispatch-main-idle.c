@@ -25,5 +25,7 @@ int
 main(void)
 {
 	puts("dispatch_main idle entry");
+	// no work and no timer exist, so dispatch_main() crashes with its named
+	// diagnostic
 	dispatch_main();
 }

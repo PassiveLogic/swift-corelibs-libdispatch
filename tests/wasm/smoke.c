@@ -24,6 +24,18 @@
 #include <string.h>
 #include <time.h>
 
+/*
+ * A smoke test of the core Dispatch APIs on single-threaded WASI. Each test
+ * prints PASS when its checks hold. The last line counts the passed tests.
+ */
+
+// the number of tests that main() runs
+#define TEST_COUNT 9
+// the number of blocks that each FIFO test queues
+#define FIFO_ITEMS 10
+// the value that the outer block of test_nested_fifo records
+#define OUTER_MARK 100
+
 static int failures;
 #define CHECK(value) do { if (!(value)) { failures++; \
 	printf("check failed: %s:%d: %s\n", __FILE__, __LINE__, #value); } } while (0)
@@ -33,7 +45,8 @@ now_ms(void)
 {
 	struct timespec time;
 	clock_gettime(CLOCK_MONOTONIC, &time);
-	return (uint64_t)time.tv_sec * 1000 + (uint64_t)time.tv_nsec / 1000000;
+	return ((uint64_t)time.tv_sec * NSEC_PER_SEC + (uint64_t)time.tv_nsec) /
+			NSEC_PER_MSEC;
 }
 
 static int once_count;
@@ -60,15 +73,20 @@ static void
 test_fifo(void)
 {
 	__block int count = 0;
-	static int order[10];
+	static int order[FIFO_ITEMS];
 	dispatch_queue_t queue = dispatch_queue_create("wasi.fifo", NULL);
-	for (int i = 0; i < 10; i++) {
-		dispatch_async(queue, ^{ order[count++] = i; });
+	for (int i = 0; i < FIFO_ITEMS; i++) {
+		// the bounds check stops an extra item from writing past the end of
+		// order. The count check below still catches it.
+		dispatch_async(queue, ^{
+			if (count < FIFO_ITEMS) order[count] = i;
+			count++;
+		});
 	}
 	CHECK(count == 0); // nothing runs before a pump
 	dispatch_sync(queue, ^{ }); // contended: pumps the ten items first
-	CHECK(count == 10);
-	for (int i = 0; i < 10; i++) CHECK(order[i] == i);
+	CHECK(count == FIFO_ITEMS);
+	for (int i = 0; i < FIFO_ITEMS; i++) CHECK(order[i] == i);
 	dispatch_release(queue);
 }
 
@@ -76,21 +94,29 @@ static void
 test_nested_fifo(void)
 {
 	__block int count = 0;
-	static int order[11];
+	// the outer block, then the ten nested items
+	static int order[FIFO_ITEMS + 1];
+	const int capacity = (int)(sizeof(order) / sizeof(order[0]));
 	dispatch_queue_t queue = dispatch_queue_create("wasi.fifo", NULL);
 	dispatch_async(queue, ^{
-		for (int i = 0; i < 10; i++) {
-			dispatch_async(queue, ^{ order[count++] = i; });
+		for (int i = 0; i < FIFO_ITEMS; i++) {
+			// the bounds check stops an extra item from writing past the end
+			// of order. The count check below still catches it.
+			dispatch_async(queue, ^{
+				if (count < capacity) order[count] = i;
+				count++;
+			});
 		}
-		order[count++] = 100;
+		if (count < capacity) order[count] = OUTER_MARK;
+		count++;
 	});
-	// the first contended sync is queued ahead of the ten nested items and
-	// pumps only the outer block; the second pumps the ten
+	// The first contended sync is queued ahead of the ten nested items. It
+	// pumps only the outer block. The second sync pumps the ten.
 	dispatch_sync(queue, ^{ });
-	CHECK(count == 1 && order[0] == 100);
+	CHECK(count == 1 && order[0] == OUTER_MARK);
 	dispatch_sync(queue, ^{ });
-	CHECK(count == 11 && order[0] == 100);
-	for (int i = 0; i < 10; i++) CHECK(order[i + 1] == i);
+	CHECK(count == capacity && order[0] == OUTER_MARK);
+	for (int i = 0; i < FIFO_ITEMS; i++) CHECK(order[i + 1] == i);
 	dispatch_release(queue);
 }
 
@@ -113,12 +139,14 @@ test_sync_and_barrier(void)
 static void
 test_semaphore(void)
 {
+	// the timeout of a wait that nothing signals
+	const uint64_t wait_ms = 100;
 	dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
 	uint64_t start = now_ms();
 	long result = dispatch_semaphore_wait(semaphore,
-			dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC));
+			dispatch_time(DISPATCH_TIME_NOW, wait_ms * NSEC_PER_MSEC));
 	uint64_t elapsed = now_ms() - start;
-	CHECK(result != 0 && elapsed >= 100);
+	CHECK(result != 0 && elapsed >= wait_ms);
 	dispatch_semaphore_signal(semaphore);
 	CHECK(dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER) == 0);
 	dispatch_release(semaphore);
@@ -143,6 +171,11 @@ test_group(void)
 	dispatch_release(queue);
 }
 
+// A 20 ms dispatch_after, then a timer source with a 20 ms interval that
+// cancels itself after TIMER_FIRES fires. The 500 ms wait timeout is far
+// longer than the dispatch_after delay.
+#define TIMER_FIRES 3
+
 static void
 test_timers(void)
 {
@@ -160,14 +193,14 @@ test_timers(void)
 			dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC),
 			20 * NSEC_PER_MSEC, 0);
 	dispatch_source_set_event_handler(timer, ^{
-		if (++fires == 3) dispatch_source_cancel(timer);
+		if (++fires == TIMER_FIRES) dispatch_source_cancel(timer);
 	});
 	dispatch_source_set_cancel_handler(timer, ^{
 		dispatch_semaphore_signal(semaphore);
 	});
 	dispatch_resume(timer);
 	CHECK(dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER) == 0);
-	CHECK(fires >= 3);
+	CHECK(fires >= TIMER_FIRES);
 	dispatch_release(timer);
 	dispatch_release(semaphore);
 	dispatch_release(queue);
@@ -176,11 +209,13 @@ test_timers(void)
 static void
 test_apply(void)
 {
+	// the sum of the indexes 0 to 7 is 28
+	const size_t iterations = 8;
 	__block size_t sum = 0;
-	dispatch_apply(8, dispatch_get_global_queue(0, 0), ^(size_t index) {
+	dispatch_apply(iterations, dispatch_get_global_queue(0, 0), ^(size_t index) {
 		sum += index;
 	});
-	CHECK(sum == 28);
+	CHECK(sum == iterations * (iterations - 1) / 2);
 }
 
 static void
@@ -188,15 +223,16 @@ test_data(void)
 {
 	static const char first[] = "01234567";
 	static const char second[] = "abcdefgh";
-	dispatch_data_t one = dispatch_data_create(first, 8, NULL,
+	static const char want[] = "01234567abcdefgh";
+	dispatch_data_t one = dispatch_data_create(first, sizeof(first) - 1, NULL,
 			DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-	dispatch_data_t two = dispatch_data_create(second, 8, NULL,
-			DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+	dispatch_data_t two = dispatch_data_create(second, sizeof(second) - 1,
+			NULL, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
 	dispatch_data_t joined = dispatch_data_create_concat(one, two);
 	const void *bytes;
 	size_t size;
 	dispatch_data_t mapped = dispatch_data_create_map(joined, &bytes, &size);
-	CHECK(size == 16 && memcmp(bytes, "01234567abcdefgh", 16) == 0);
+	CHECK(size == sizeof(want) - 1 && memcmp(bytes, want, size) == 0);
 	dispatch_release(mapped);
 	dispatch_release(joined);
 	dispatch_release(two);
@@ -225,6 +261,6 @@ main(void)
 	run("apply", test_apply, &passed);
 	run("data", test_data, &passed);
 	if (failures) return 1;
-	printf("ALL PASS (%d/9)\n", passed);
-	return passed == 9 ? 0 : 1;
+	printf("ALL PASS (%d/%d)\n", passed, TEST_COUNT);
+	return passed == TEST_COUNT ? 0 : 1;
 }

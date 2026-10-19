@@ -18,6 +18,10 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
+/*
+ * An indefinite semaphore wait inside a drained work item crashes with a
+ * named diagnostic. Nothing can signal the semaphore.
+ */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
 
@@ -26,6 +30,7 @@ main(void)
 {
 	dispatch_queue_t queue = dispatch_queue_create("wasi.nested.wait", NULL);
 	dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+	// 10 s: the timer stays armed for the whole test
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), queue, ^{});
 	dispatch_async(queue, ^{
 		puts("nested wait starting");

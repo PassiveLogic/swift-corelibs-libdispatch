@@ -999,16 +999,16 @@ _dispatch_ktrace_impl(uint32_t code, uint64_t a, uint64_t b,
 		_dispatch_set_crash_log_message_dynamic((msg))
 #define _dispatch_set_crash_log_message_dynamic(msg) _RPTF0(_CRT_ASSERT, (msg))
 #elif defined(__wasi__)
-// a wasm trap carries no crash-log payload: write the reason to stderr
-// before trapping so crashes stay diagnosable under WASI runtimes. This
+// A wasm trap has no crash-log payload. Write the reason to stderr before
+// the trap, so that a crash under a WASI runtime shows its cause. This
 // bypasses _dispatch_log(), so LIBDISPATCH_LOG cannot hide or redirect it.
 #define _dispatch_set_crash_log_cause_and_message(ac, msg) \
 		((void)fprintf(stderr, "%s (cause: 0x%llx)\n", (msg), \
 				(unsigned long long)(ac)))
 #define _dispatch_set_crash_log_message(msg) \
 		((void)fprintf(stderr, "%s\n", (msg)))
-// _dispatch_assert_crash() logs the message first; this repeats it on
-// stderr only when LIBDISPATCH_LOG kept that log line off stderr
+// _dispatch_assert_crash() logs the message first. This repeats it on
+// stderr only when LIBDISPATCH_LOG kept that log line off stderr.
 DISPATCH_NOINLINE DISPATCH_COLD
 void _dispatch_wasi_crash_log_dynamic(const char *msg);
 #define _dispatch_set_crash_log_message_dynamic(msg) \

@@ -20,24 +20,30 @@
 
 /*
  * A client constructor sees an initialized libdispatch. WASI links
- * libdispatch statically, and wasm-ld runs default-priority constructors in
- * link order, client objects first. libdispatch_init therefore runs at
- * priority 101, so a default-priority client constructor sees a bound main
- * queue. This is what a shared libdispatch gives on Linux, and what libSystem
- * gives on Darwin.
+ * libdispatch statically. wasm-ld runs default-priority constructors in link
+ * order, and client objects come first. So libdispatch_init runs at priority
+ * 101, and a default-priority client constructor sees a bound main queue.
+ * A shared libdispatch on Linux and libSystem on Darwin give the same result.
  *
- * Expected behavior verified here:
+ * The test checks that:
  *  - the constructor runs on the main queue (dispatch_assert_queue passes,
- *    the current label is the main queue label)
- *  - a constructor that posts deferred main-queue work and then waits for
+ *    and the current label is the main queue label)
+ *  - a constructor can post deferred main-queue work, then wait for
  *    global-queue work (an indefinite semaphore wait and a timed group
- *    wait) gets that work, and does not crash in the main-queue drain
+ *    wait). The constructor gets that work, and the main-queue drain does
+ *    not crash.
  *  - the deferred main-queue block runs on the main queue
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+// the label of the main queue
+static const char MAIN_LABEL[] = "com.apple.main-thread";
+
+// the constructor posts this many global-queue blocks and one main block
+#define GLOBAL_BLOCKS 2
 
 static const char *g_ctor_label;
 static const char *g_main_block_label;
@@ -71,6 +77,7 @@ client_constructor(void)
 			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
 		g_global_block_runs++;
 	});
+	// 1 s is far longer than the work needs
 	if (dispatch_group_wait(group,
 			dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC))) {
 		printf("FAIL: timed group wait in a constructor timed out\n");
@@ -83,17 +90,17 @@ static void
 check(void *ctxt)
 {
 	(void)ctxt;
-	if (!g_ctor_label || strcmp(g_ctor_label, "com.apple.main-thread")) {
+	if (!g_ctor_label || strcmp(g_ctor_label, MAIN_LABEL)) {
 		printf("FAIL: constructor queue label %s\n",
 				g_ctor_label ? g_ctor_label : "(null)");
 		exit(1);
 	}
-	if (g_global_block_runs != 2) {
+	if (g_global_block_runs != GLOBAL_BLOCKS) {
 		printf("FAIL: global blocks ran %d times\n", g_global_block_runs);
 		exit(1);
 	}
 	if (g_main_block_runs != 1 || !g_main_block_label ||
-			strcmp(g_main_block_label, "com.apple.main-thread")) {
+			strcmp(g_main_block_label, MAIN_LABEL)) {
 		printf("FAIL: main block ran %d times on %s\n", g_main_block_runs,
 				g_main_block_label ? g_main_block_label : "(null)");
 		exit(1);
@@ -105,9 +112,9 @@ check(void *ctxt)
 int
 main(void)
 {
-	// Blocking waits never drain the main queue. The constructor's deferred
-	// main-queue block runs in dispatch_main(), before this check, which was
-	// queued after it (FIFO).
+	// Blocking waits never drain the main queue. So the main-queue block of
+	// the constructor runs first in dispatch_main(). This check runs after
+	// it, because the main queue is FIFO.
 	dispatch_async_f(dispatch_get_main_queue(), NULL, check);
 	dispatch_main();
 }

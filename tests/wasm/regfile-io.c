@@ -19,11 +19,11 @@
  */
 
 /*
- * dispatch_read / dispatch_write / DispatchIO on a regular file in a
- * preopened directory (the runner maps one with --preopen). Regular files
- * take the always-ready path - they are never polled - so this pins that
- * the io convenience APIs complete with the actual payload: write it out,
- * read it back whole, then a DISPATCH_IO_RANDOM byte-range read.
+ * dispatch_read, dispatch_write, and dispatch IO channels complete with the
+ * actual payload on a regular file. Regular files take the always-ready
+ * path, and Dispatch never polls them. The file is in a directory that the
+ * runner preopens (--preopen). The test writes the payload, reads it back
+ * whole, then reads a byte range through a DISPATCH_IO_RANDOM channel.
  */
 #include <dispatch/dispatch.h>
 #include <fcntl.h>
@@ -31,8 +31,19 @@
 #include <string.h>
 #include <unistd.h>
 
-static const char payload[] = "regular-file-payload-0123456789";
+static const char path[] = "/scratch/regfile-io.txt";
+
+// The random-access read gets RANGE_TEXT back. The offset and length come
+// from the parts of the payload.
+#define RANGE_PREFIX "regular-file-"
+#define RANGE_TEXT "payload"
+static const char payload[] = RANGE_PREFIX RANGE_TEXT "-0123456789";
 #define PAYLOAD_LEN (sizeof(payload) - 1)
+#define RANGE_OFFSET (sizeof(RANGE_PREFIX) - 1)
+#define RANGE_LEN (sizeof(RANGE_TEXT) - 1)
+
+// the maximum read length, more than the payload
+#define READ_MAX 4096
 
 int
 main(void)
@@ -40,8 +51,7 @@ main(void)
 	dispatch_queue_t queue = dispatch_queue_create("wasi.regio", NULL);
 	dispatch_semaphore_t sem = dispatch_semaphore_create(0);
 
-	int wfd = open("/scratch/regfile-io.txt", O_CREAT | O_TRUNC | O_WRONLY,
-			0644);
+	int wfd = open(path, O_CREAT | O_TRUNC | O_WRONLY, 0644);
 	if (wfd < 0) { printf("FAIL: open for write\n"); return 1; }
 	dispatch_data_t data = dispatch_data_create(payload, PAYLOAD_LEN, queue,
 			DISPATCH_DATA_DESTRUCTOR_DEFAULT);
@@ -62,12 +72,13 @@ main(void)
 	}
 	printf("dispatch_write done\n");
 
-	int rfd = open("/scratch/regfile-io.txt", O_RDONLY);
+	int rfd = open(path, O_RDONLY);
 	if (rfd < 0) { printf("FAIL: open for read\n"); return 1; }
+	// larger than the payload. The copy below never writes past its end.
 	static char got[64];
 	__block int read_error = -1;
 	__block size_t got_len = 0;
-	dispatch_read(rfd, 4096, queue, ^(dispatch_data_t rdata, int error) {
+	dispatch_read(rfd, READ_MAX, queue, ^(dispatch_data_t rdata, int error) {
 		read_error = error;
 		if (rdata) {
 			dispatch_data_apply(rdata, ^bool(dispatch_data_t region,
@@ -91,22 +102,22 @@ main(void)
 	}
 	printf("dispatch_read payload OK\n");
 
-	// random-access DispatchIO: bytes [13, 13+7) of the payload are "payload"
-	int iofd = open("/scratch/regfile-io.txt", O_RDONLY);
+	// random-access DispatchIO: read RANGE_LEN bytes at RANGE_OFFSET
+	int iofd = open(path, O_RDONLY);
 	if (iofd < 0) { printf("FAIL: open for io\n"); return 1; }
 	dispatch_io_t channel = dispatch_io_create(DISPATCH_IO_RANDOM, iofd,
 			queue, ^(int error) { (void)error; });
 	if (!channel) { printf("FAIL: dispatch_io_create\n"); return 1; }
-	static char range[8];
+	static char range[RANGE_LEN + 1];
 	__block size_t range_len = 0;
 	__block int io_error = -1;
-	dispatch_io_read(channel, 13, 7, queue,
+	dispatch_io_read(channel, RANGE_OFFSET, RANGE_LEN, queue,
 			^(bool done, dispatch_data_t rdata, int error) {
 		if (rdata) {
 			dispatch_data_apply(rdata, ^bool(dispatch_data_t region,
 					size_t offset, const void *buffer, size_t size) {
 				(void)region; (void)offset;
-				if (range_len + size <= 7) {
+				if (range_len + size <= RANGE_LEN) {
 					memcpy(range + range_len, buffer, size);
 					range_len += size;
 				}
@@ -122,7 +133,8 @@ main(void)
 	dispatch_io_close(channel, 0);
 	dispatch_release(channel);
 	close(iofd);
-	if (io_error || range_len != 7 || memcmp(range, "payload", 7) != 0) {
+	if (io_error || range_len != RANGE_LEN ||
+			memcmp(range, RANGE_TEXT, RANGE_LEN) != 0) {
 		printf("FAIL: io random error=%d len=%zu\n", io_error, range_len);
 		return 1;
 	}

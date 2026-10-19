@@ -29,10 +29,13 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+// each busy main-queue item sleeps 10 ms
+#define BUSY_ITEM_USEC (10 * NSEC_PER_MSEC / NSEC_PER_USEC)
+
 static void
 keep_busy(void *context)
 {
-	usleep(10000);
+	usleep(BUSY_ITEM_USEC);
 	dispatch_async_f(dispatch_get_main_queue(), context, keep_busy);
 }
 
@@ -44,6 +47,7 @@ main(void)
 		puts("wall timer followed the forward clock change");
 		exit(0);
 	});
+	// fail if the walltime timer has not fired after 3 s of uptime
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC),
 			main_q, ^{
 		puts("FAIL: wall timer did not follow the forward clock change");

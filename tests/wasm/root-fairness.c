@@ -19,15 +19,16 @@
  */
 
 /*
- * A self-replenishing HIGH root queue must not starve a LOW root item: the
+ * A HIGH root queue that refills itself must not starve a LOW root item. The
  * drain rotates among pending roots, so the LOW item runs partway through
- * the HIGH chain. Pumped by dispatch_main(); the last HIGH item checks and
- * exits.
+ * the HIGH chain. dispatch_main() pumps the work. The last HIGH item checks
+ * the result and exits.
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
 #include <stdlib.h>
 
+// the length of the HIGH chain
 #define HIGH_WORK_COUNT 100
 
 static int high_count;
@@ -50,8 +51,8 @@ high_work(void *context)
 		dispatch_async_f(queue, queue, high_work);
 		return;
 	}
-	// the self-replenishing HIGH chain is done: the LOW item must have run
-	// somewhere in the middle of it, not after it
+	// the HIGH chain is done. The LOW item must have run in the middle of
+	// it, not after it.
 	if (low_seen_after <= 0 || low_seen_after >= HIGH_WORK_COUNT) {
 		printf("FAIL: high_count=%d low_seen_after=%d\n", high_count,
 				low_seen_after);

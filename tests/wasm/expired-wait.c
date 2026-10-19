@@ -25,8 +25,10 @@
  * shape. It is not the DISPATCH_TIME_NOW constant, so it reaches the
  * timed-wait loop. On threaded platforms such a wait never runs client code
  * on the caller's stack, and the single-threaded port must not either. A
- * wait with time left still runs the queued work that satisfies it, and an
+ * wait with time left still runs the queued work that satisfies it. An
  * expired wait leaves no stranded semaphore count.
+ *
+ * Each check exits with its own status, so the status names the failed check.
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
@@ -72,7 +74,8 @@ main(void)
 	r = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 0));
 	check(r != 0 && ran == 0, 4, "expired wait ran the signaling item", r);
 
-	// a wait with time left runs the queued work and consumes the signal
+	// a wait with time left runs the three queued items and consumes the
+	// signal. 2 s is far longer than the items need.
 	r = dispatch_semaphore_wait(sem,
 			dispatch_time(DISPATCH_TIME_NOW, 2 * (int64_t)NSEC_PER_SEC));
 	check(r == 0 && ran == 3, 5, "timed wait with time left", r);

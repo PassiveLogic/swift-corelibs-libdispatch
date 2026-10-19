@@ -19,11 +19,11 @@
  */
 
 /*
- * A serial queue that targets the main queue re-posts a tick until another
- * source of work sets a flag. This polling pattern works on threaded
- * platforms. On the sole WASI thread, a main-queue step must run one item of
- * such a queue and send the queue to the back of the main queue, so root
- * work and timers still get a turn.
+ * A serial queue that targets the main queue must not starve root work and
+ * timers. The queue re-posts a tick until other work sets a flag. This
+ * polling pattern works on threaded platforms. On the sole WASI thread, a
+ * main-queue step must run one item of such a queue, then move the queue to
+ * the back of the main queue. So root work and timers still get a turn.
  *  1. A global-queue block sets the flag.
  *  2. A 10 ms dispatch_after sets the flag.
  */
@@ -31,6 +31,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+// The test fails after this many ticks. A fair drain sets the flag after a
+// few ticks. The limit only stops a starved run in a few seconds.
 #define TICK_LIMIT 2000000
 
 static dispatch_queue_t lane;

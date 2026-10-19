@@ -25,6 +25,8 @@
  *  - a wait with an expired deadline does not run main-queue blocks either
  *  - root-queue work still runs during the wait, one item per step
  *  - dispatch_main() then runs the whole main-queue backlog in order
+ *
+ * Each check exits with its own status, so the status names the failed check.
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
@@ -32,10 +34,14 @@
 #include <stdint.h>
 #include <time.h>
 
+// the number of main-queue items in the backlog
 #define MAIN_ITEMS 20
+// each main-queue item spins this long, so the backlog takes 100 ms
 #define ITEM_MS 5
+// the timeout of each timed wait
 #define BUDGET_MS 20
-// one root item (ITEM_MS) plus scheduling noise; far below the backlog
+// The latest return of a timed wait. The 30 ms margin allows for one root
+// item (ITEM_MS) and scheduling noise. It is far below the backlog time.
 #define LATE_LIMIT_MS (BUDGET_MS + 30)
 
 static uint64_t
@@ -43,7 +49,8 @@ mono_ms(void)
 {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+	return ((uint64_t)ts.tv_sec * NSEC_PER_SEC + (uint64_t)ts.tv_nsec) /
+			NSEC_PER_MSEC;
 }
 
 static void

@@ -107,7 +107,7 @@ elseif(ANDROID)
   target_compile_options(dispatch PRIVATE
     -U_GNU_SOURCE)
 elseif(CMAKE_SYSTEM_NAME STREQUAL "WASI")
-  # wasip1 has one thread, so build as a uniprocessor: DISPATCH_HW_CONFIG_UP
+  # wasip1 has one thread, so build as a uniprocessor. DISPATCH_HW_CONFIG_UP
   # drops cache-line padding and spin loops. event_wasi.c rejects threaded
   # targets.
   target_compile_definitions(dispatch PRIVATE

@@ -19,18 +19,18 @@
  */
 
 /*
- * A dispatch_sync body submits async work that itself syncs back onto the
- * outer queue. On threaded platforms the async block runs on a worker and
- * simply blocks until the outer sync returns. On the cooperative port a poke
- * never runs the block on the submitting stack (which holds the queue's
- * barrier lock); the block runs at the next pump point, here a contended
- * dispatch_sync, after the outer sync has released the lock. Running it
- * inline would make the inner sync a spurious "queue already owned by
- * current thread" crash for a program that is correct everywhere else.
+ * A dispatch_sync body submits async work that syncs back onto the outer
+ * queue. On threaded platforms the async block runs on a worker and blocks
+ * until the outer sync returns. On the cooperative port a poke never runs the
+ * block on the submitting stack, which holds the barrier lock of the queue.
+ * The block runs at the next pump point, here a contended dispatch_sync,
+ * after the outer sync released the lock. If the block ran inline, the inner
+ * sync would crash with "queue already owned by current thread". The program
+ * is correct on all other platforms, so that crash would be wrong.
  *
- * Same class, dispose flavor: releasing a queue whose specifics carry
- * destructors submits the destructor batch mid-dispose; that batch must run
- * at a later pump, never inside the dispose.
+ * The dispose path follows the same rule. Releasing a queue whose specifics
+ * have destructors submits the destructor batch during the dispose. That
+ * batch must run at a later pump, never inside the dispose.
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>

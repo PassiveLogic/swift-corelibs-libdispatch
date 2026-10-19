@@ -71,9 +71,18 @@ set(SWIFT_WASI_CLANG_RESOURCES
 if(NOT EXISTS "${DISPATCH_WASI_BUILTINS}")
   message(FATAL_ERROR "WASI builtins archive does not exist: ${DISPATCH_WASI_BUILTINS}")
 endif()
-# The Swift static resources and the Swift clang resource dir are only used
-# when building the overlay and its consumers; a C-only build must not
-# require them (they may be absent from a trimmed or non-Swift SDK layout).
+# The host clang looks for its compiler runtime in its own resource dir,
+# which has no wasm32 build. So C and C++ executables drop the default
+# libraries and link libc and the WASI builtins archive instead. This applies
+# to every executable that uses this toolchain, not only the tests. Swift
+# links do not use these settings.
+set(CMAKE_C_STANDARD_LIBRARIES_INIT
+  "-nodefaultlibs -lc \"${DISPATCH_WASI_BUILTINS}\"")
+set(CMAKE_CXX_STANDARD_LIBRARIES_INIT
+  "-nodefaultlibs -lc++ -lc++abi -lc \"${DISPATCH_WASI_BUILTINS}\"")
+# Only the Swift overlay and its consumers use the Swift static resources
+# and the Swift clang resource dir. A C-only build must not require them,
+# because a trimmed or non-Swift SDK layout can omit them.
 if(ENABLE_SWIFT)
   if(NOT IS_DIRECTORY "${SWIFT_WASI_STATIC_RESOURCES}")
     message(FATAL_ERROR

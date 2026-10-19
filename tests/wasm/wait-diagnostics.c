@@ -18,12 +18,13 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
-// Pins that each indefinite-wait deadlock diagnostic names the public call
-// that blocked. A crash case per build: WAIT_DIAG_SYNC parks a dispatch_sync
-// behind queued work, WAIT_DIAG_GROUP parks a dispatch_group_wait, and
-// WAIT_DIAG_CANCEL parks dispatch_source_cancel_and_wait on a timer source.
-// Each one runs inside a drained work item, so nothing can satisfy it.
-// nested-wait.c pins the dispatch_semaphore_wait case.
+// Each indefinite-wait deadlock diagnostic names the public call that
+// blocked. Each build selects one crash case:
+//  - WAIT_DIAG_SYNC: a dispatch_sync waits behind queued work
+//  - WAIT_DIAG_GROUP: a dispatch_group_wait waits
+//  - WAIT_DIAG_CANCEL: dispatch_source_cancel_and_wait waits on a timer
+// Each wait runs inside a drained work item, so nothing can satisfy it.
+// nested-wait.c covers the dispatch_semaphore_wait case.
 
 #include <dispatch/dispatch.h>
 #include <stdio.h>
@@ -53,6 +54,7 @@ main(void)
 	dispatch_queue_t queue = dispatch_queue_create("wasi.wait.diag", NULL);
 	dispatch_source_t timer = dispatch_source_create(
 			DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
+	// 60 s: the timer must not fire during the test
 	dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW,
 			60 * NSEC_PER_SEC), DISPATCH_TIME_FOREVER, 0);
 	dispatch_source_set_event_handler(timer, ^{});

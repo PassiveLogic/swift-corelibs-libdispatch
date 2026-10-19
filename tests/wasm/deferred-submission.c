@@ -19,19 +19,20 @@
  */
 
 /*
- * Pins the submission semantics of the cooperative port. dispatch_async
- * never runs its block before the call returns: a poke only records pending
- * work, and the work runs at the next pump point (a blocking wait here;
- * dispatch_main() or a registered host turn elsewhere). This is the contract
- * threaded platforms give too. The pump runs pending work in category
- * priority order (due timers, the manager queue, the main queue, then root
- * queues by QoS) and in FIFO order within one queue. A blocking wait skips
- * the main queue:
+ * dispatch_async never runs its block before the call returns. Threaded
+ * platforms give the same contract. The poke (the wakeup that a submission
+ * sends) only records pending work. The work runs at the next pump point. In
+ * this test that is a blocking wait. Other pump points are dispatch_main()
+ * and a registered host turn.
+ *
+ * The pump runs pending work in category order: due timers, the manager
+ * queue, the main queue, then root queues by QoS. Work in one queue runs in
+ * FIFO order. A blocking wait skips the main queue.
  *
  *  1. At top level, a submitted block has not run when dispatch_async
  *     returns. It runs at the next blocking wait.
  *  2. Blocks submitted from inside a running work item run in the outer
- *     drain. A blocking wait never drains the main queue, so a main-queue
+ *     drain. A blocking wait never drains the main queue. So a main-queue
  *     item submitted there runs later, in dispatch_main().
  *  3. A group notify installed while the group is still busy runs after the
  *     root-queue items that were already queued, in FIFO order.
@@ -41,6 +42,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+// The run order, one letter per block. It holds more than the longest
+// expected string. push() keeps the last byte for the NUL terminator.
 static char order[16];
 static size_t order_n;
 
@@ -83,8 +86,8 @@ main(void)
 		exit(1);
 	}
 
-	// 2. nested submissions run in the outer drain; the main-queue item
-	//    does not run at the top-level wait
+	// 2. nested submissions run in the outer drain. The main-queue item
+	//    does not run at the top-level wait.
 	__block int main_ran = 0;
 	dispatch_async(gq, ^{
 		push('A');

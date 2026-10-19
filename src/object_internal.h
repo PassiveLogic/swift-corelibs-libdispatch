@@ -279,7 +279,8 @@ typedef struct dispatch_invoke_context_s {
 #define DISPATCH_THREAD_IS_NARROWING 1
 
 #if defined(__wasi__)
-// True only while a WASI main-queue step runs (see queue.c)
+// True only while a WASI main-queue step runs (see
+// _dispatch_wasi_main_queue_drain in queue.c).
 extern bool _dispatch_wasi_main_step_narrowing;
 #define dispatch_with_disabled_narrowing(dic, ...) ({ \
 		uint64_t suspend_narrow_check = dic->dic_next_narrow_check; \

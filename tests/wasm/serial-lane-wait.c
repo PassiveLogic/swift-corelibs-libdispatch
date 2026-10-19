@@ -30,6 +30,15 @@
 #include <stdlib.h>
 #include <time.h>
 
+// The test fails when the lane runs longer than this.
+#define LANE_TIME_LIMIT_NS (2 * NSEC_PER_SEC)
+// The lane reads the clock once every 4096 items, to keep each item cheap.
+#define CLOCK_CHECK_MASK 0xfff
+// the timeout of the timed wait
+#define WAIT_MS 20
+// The timed wait fails when it returns later than this.
+#define WAIT_LATE_MS 1000
+
 static dispatch_queue_t lane;
 static int stop;
 static unsigned long lane_count;
@@ -48,8 +57,8 @@ lane_item(void *context)
 {
 	(void)context;
 	lane_count++;
-	if ((lane_count & 0xfff) == 0 &&
-			now_ns() - start_ns > 2 * NSEC_PER_SEC) {
+	if ((lane_count & CLOCK_CHECK_MASK) == 0 &&
+			now_ns() - start_ns > LANE_TIME_LIMIT_NS) {
 		printf("FAIL: lane held the thread for %lu items\n", lane_count);
 		exit(1);
 	}
@@ -66,9 +75,9 @@ main(void)
 	dispatch_semaphore_t sem = dispatch_semaphore_create(0);
 	uint64_t wait_start = now_ns();
 	long result = dispatch_semaphore_wait(sem,
-			dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC));
+			dispatch_time(DISPATCH_TIME_NOW, WAIT_MS * NSEC_PER_MSEC));
 	uint64_t waited_ms = (now_ns() - wait_start) / NSEC_PER_MSEC;
-	if (result == 0 || waited_ms < 20 || waited_ms > 1000) {
+	if (result == 0 || waited_ms < WAIT_MS || waited_ms > WAIT_LATE_MS) {
 		printf("FAIL: timed wait result=%ld after %llu ms\n", result,
 				(unsigned long long)waited_ms);
 		return 1;

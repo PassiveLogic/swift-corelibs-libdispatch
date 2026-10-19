@@ -38,6 +38,7 @@ async function runGuest(binary, inlineSchedule) {
       timer = null;
     }
     if (delayNs === -1n) return;
+    // round the delay up to whole milliseconds
     const delayMs = Number((delayNs + 999999n) / 1000000n);
     timer = setTimeout(() => {
       timer = null;

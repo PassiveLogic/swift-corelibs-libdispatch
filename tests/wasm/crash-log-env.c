@@ -19,14 +19,15 @@
  */
 
 /*
- * A wasm trap carries no payload, so the crash reason on stderr is the only
- * diagnostic. LIBDISPATCH_LOG must not hide it: with the log disabled (NO)
- * or sent to a file (file), the reason must still reach stderr.
+ * LIBDISPATCH_LOG must not hide a crash reason. A wasm trap carries no
+ * payload, so the reason on stderr is the only diagnostic. With the log
+ * disabled (NO) or sent to a file (file), the reason must still reach
+ * stderr.
  *
- * The runner starts the guest with an empty environment, so the test sets
- * LIBDISPATCH_LOG itself before the first libdispatch log call.
+ * The runner starts the guest with an empty environment. So the test sets
+ * LIBDISPATCH_LOG itself, before the first libdispatch log call.
  *
- * CRASH_LOG_ENV  value for LIBDISPATCH_LOG
+ * CRASH_LOG_ENV     the value for LIBDISPATCH_LOG
  * CRASH_LOG_ASSERT  0: client crash (over-resume, DISPATCH_CLIENT_CRASH)
  *                   1: client assertion (dispatch_assert_queue off-queue)
  */

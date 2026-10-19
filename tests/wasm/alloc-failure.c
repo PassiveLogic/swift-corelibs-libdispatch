@@ -22,14 +22,26 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// On threaded platforms an allocation failure inside libdispatch sleeps and
-// retries, because another thread can free memory meanwhile. The sole WASI
-// thread cannot free anything while it sleeps, and the module memory is at
-// its declared maximum, so the retry would never succeed. The library must
-// crash with a named diagnostic instead of hanging.
+// An allocation failure in libdispatch must crash with a named diagnostic on
+// single-threaded WASI. It must not hang. Threaded platforms sleep and retry,
+// because another thread can free memory meanwhile. WASI has no other
+// thread, and the module memory is at its maximum. So a retry never succeeds.
 //
-// The test links with a small --max-memory, takes all heap memory, and then
-// asks libdispatch to allocate.
+// The test fills the heap, then asks libdispatch to allocate.
+
+// The module memory limit. It must match -Wl,--max-memory in CMakeLists.txt.
+#define MAX_MEMORY_BYTES (16u << 20)
+
+// The smallest block. Each block stores a pointer to the previous block, so
+// each block must hold one pointer.
+#define MIN_BLOCK_SIZE 8
+_Static_assert(MIN_BLOCK_SIZE >= sizeof(void *),
+		"a heap block must hold one pointer");
+
+// The head of the linked list of all blocks. The test never frees the
+// blocks, so the heap stays full. The volatile store stops the compiler from
+// removing the malloc calls.
+static void *volatile hoard;
 
 static void
 work(void *ctxt)
@@ -40,23 +52,30 @@ work(void *ctxt)
 static void
 exhaust_heap(void)
 {
-	static const size_t sizes[] = {
-		1u << 20, 1u << 16, 1u << 12, 1u << 8, 64, 16, 8,
+	// Block sizes, largest first: 1 MiB, 64 KiB, 4 KiB, 256 B, 64 B, 16 B,
+	// and 8 B. Large blocks fill most of the heap fast. Small blocks then fill
+	// the gaps that remain.
+	static const size_t block_sizes[] = {
+		1u << 20, 1u << 16, 1u << 12, 1u << 8, 64, 16, MIN_BLOCK_SIZE,
 	};
-	void *hoard = NULL;
-	for (size_t i = 0; i < sizeof(sizes) / sizeof(sizes[0]); i++) {
-		void *p;
-		while ((p = malloc(sizes[i])) != NULL) {
-			*(void **)p = hoard;
-			hoard = p;
+	for (size_t i = 0; i < sizeof(block_sizes) / sizeof(block_sizes[0]); i++) {
+		size_t size = block_sizes[i];
+		// The loop ends when malloc returns NULL. The memory limit makes
+		// that happen before the count limit. The count limit is a backstop.
+		for (size_t n = 0; n < MAX_MEMORY_BYTES / size; n++) {
+			void **block = malloc(size);
+			if (block == NULL) break;
+			// size >= MIN_BLOCK_SIZE, so this write stays inside the block
+			*block = hoard;
+			hoard = block;
 		}
 	}
-	// the hoard is never freed, so the heap stays full
 }
 
 int
 main(void)
 {
+	// unbuffered stdout writes each marker before the crash
 	setvbuf(stdout, NULL, _IONBF, 0);
 	dispatch_queue_t queue = dispatch_queue_create("wasi.alloc.failure", NULL);
 	exhaust_heap();
@@ -70,6 +89,7 @@ main(void)
 	(void)dispatch_queue_create("wasi.alloc.failure.second", NULL);
 	(void)work;
 #endif
+	// the allocation above must crash, so this line never runs
 	puts("UNEXPECTED: allocation returned");
 	return 0;
 }

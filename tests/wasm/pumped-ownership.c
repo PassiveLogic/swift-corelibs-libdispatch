@@ -29,6 +29,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+// the number of pumped items that the four cases run
+#define PUMPED_ITEMS 4
+
 static void
 check_worker(dispatch_queue_t held, dispatch_queue_t own)
 {
@@ -60,8 +63,8 @@ main(void)
 		dispatch_assert_queue(sq);
 	});
 
-	// group wait two sync levels deep; the concurrent queue takes no drain
-	// lock, so only a leaked frame chain could make it look current
+	// group wait two sync levels deep. The concurrent queue takes no drain
+	// lock, so only a leaked frame chain could make it look current.
 	dispatch_sync(cq, ^{
 		dispatch_sync(sq, ^{
 			dispatch_group_async(group, other, ^{
@@ -92,8 +95,8 @@ main(void)
 
 	// top-level code keeps the main-thread identity
 	dispatch_assert_queue(dispatch_get_main_queue());
-	if (ran != 4) {
-		printf("FAIL: ran=%d, expected 4\n", ran);
+	if (ran != PUMPED_ITEMS) {
+		printf("FAIL: ran=%d, expected %d\n", ran, PUMPED_ITEMS);
 		return 1;
 	}
 	printf("pumped ownership OK\n");

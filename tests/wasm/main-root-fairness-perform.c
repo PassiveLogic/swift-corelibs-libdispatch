@@ -33,6 +33,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+// The test fails after this many host turns. A fair drain runs the root
+// item within a few turns.
 #define MAX_TURNS 1000
 
 static bool turn_requested;

@@ -1,7 +1,7 @@
-# Node drives the focused tests (it captures guest output and checks exit mode
-# plus expected markers). When Node is missing or too old, everything here
-# still builds and every test stays visible in ctest, just DISABLED - the same
-# shape tests/CMakeLists.txt uses when WASI_TEST_RUNNER is absent.
+# Node runs the focused tests. The runner captures the guest output, then
+# checks the exit mode and the expected markers. Without Node 19.8 or newer,
+# all targets still build, and ctest lists each test as DISABLED.
+# tests/CMakeLists.txt does the same when WASI_TEST_RUNNER is missing.
 set(DISPATCH_WASI_NODE_OK TRUE)
 find_program(NODE_EXECUTABLE node)
 if(NOT NODE_EXECUTABLE)
@@ -30,10 +30,6 @@ function(add_wasi_test name source mode expected timeout)
   add_executable(${name} ${source})
   target_compile_options(${name} PRIVATE -fblocks -Wall)
   target_link_libraries(${name} PRIVATE dispatch)
-  target_link_options(${name} PRIVATE
-    -nodefaultlibs
-    -lc
-    "${DISPATCH_WASI_BUILTINS}")
   add_test(NAME ${name}
     COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
       ${mode} "$<TARGET_FILE:${name}>" "${expected}" ${ARGN})
@@ -95,6 +91,8 @@ add_wasi_test(dispatch_wasi_blocking_waits blocking-waits.c success
   "blocking waits OK" 10)
 add_wasi_test(dispatch_wasi_expired_wait expired-wait.c success
   "expired wait OK" 5)
+add_wasi_test(dispatch_wasi_self_triggering_source self-triggering-source.c
+  success "self-triggering source OK" 5)
 add_wasi_test(dispatch_wasi_timed_wait_main_backlog timed-wait-main-backlog.c
   success "timed wait main backlog OK" 5)
 add_wasi_test(dispatch_wasi_api_surface api-surface.c success "api surface OK" 10)
@@ -131,11 +129,7 @@ add_wasi_test(dispatch_wasi_nested_dispatch_main nested-dispatch-main.c crash
 add_executable(dispatch_wasi_host_event_loop host-event-loop.c)
 target_compile_options(dispatch_wasi_host_event_loop PRIVATE -fblocks -Wall)
 target_link_libraries(dispatch_wasi_host_event_loop PRIVATE dispatch)
-target_link_options(dispatch_wasi_host_event_loop PRIVATE
-  -mexec-model=reactor
-  -nodefaultlibs
-  -lc
-  "${DISPATCH_WASI_BUILTINS}")
+target_link_options(dispatch_wasi_host_event_loop PRIVATE -mexec-model=reactor)
 add_test(NAME dispatch_wasi_host_event_loop
   COMMAND "${NODE_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-host-event-loop-test.mjs"
@@ -174,8 +168,8 @@ if(NOT DISPATCH_WASI_NODE_OK)
     dispatch_wasi_host_event_loop_timer_race PROPERTIES DISABLED TRUE)
 endif()
 
-# Readiness-driven tests: the runner pipes stdin only after a delay, so the
-# guest must park in the host poll and wake on fd readiness to pass.
+# Readiness tests. The runner pipes stdin only after a delay, so the guest
+# must park in the host poll and wake on fd readiness to pass.
 add_executable(dispatch_wasi_read_source read-source.c)
 add_executable(dispatch_wasi_fd_wakeup_wait fd-wakeup-wait.c)
 add_executable(dispatch_wasi_group_fd_wakeup group-fd-wakeup.c)
@@ -186,10 +180,6 @@ foreach(_stdin_test dispatch_wasi_read_source dispatch_wasi_fd_wakeup_wait
     dispatch_wasi_pipe_eof)
   target_compile_options(${_stdin_test} PRIVATE -fblocks -Wall)
   target_link_libraries(${_stdin_test} PRIVATE dispatch)
-  target_link_options(${_stdin_test} PRIVATE
-    -nodefaultlibs
-    -lc
-    "${DISPATCH_WASI_BUILTINS}")
 endforeach()
 add_test(NAME dispatch_wasi_read_source
   COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
@@ -207,15 +197,11 @@ add_test(NAME dispatch_wasi_io_stream
   COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
     --stdin-after "250:ping" success "$<TARGET_FILE:dispatch_wasi_io_stream>"
     "dispatch io stream OK")
-# regular-file dispatch_read/dispatch_write/DispatchIO with payload
-# assertions; the runner maps a scratch directory into the guest
+# dispatch_read, dispatch_write, and DispatchIO on a regular file, with
+# payload checks. The runner maps a scratch directory into the guest.
 add_executable(dispatch_wasi_regfile_io regfile-io.c)
 target_compile_options(dispatch_wasi_regfile_io PRIVATE -fblocks -Wall)
 target_link_libraries(dispatch_wasi_regfile_io PRIVATE dispatch)
-target_link_options(dispatch_wasi_regfile_io PRIVATE
-  -nodefaultlibs
-  -lc
-  "${DISPATCH_WASI_BUILTINS}")
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/regfile-io-scratch")
 add_test(NAME dispatch_wasi_regfile_io
   COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
@@ -223,10 +209,10 @@ add_test(NAME dispatch_wasi_regfile_io
     success "$<TARGET_FILE:dispatch_wasi_regfile_io>"
     "dispatch_write done" "dispatch_read payload OK" "io random range OK"
     "regular file io OK")
-# pipe EOF with a source that never cancels: on hangup-reporting hosts the
-# harvest drops the source and dispatch_main() traps idle; on hosts without
-# the hangup flag (emulated with --suppress-poll-hangup) the permanently
-# ready park must become a named crash, not a silent hot loop
+# Pipe EOF with a source that never cancels. On hosts that report hangup,
+# the harvest drops the source and dispatch_main() crashes as idle. On hosts
+# without the hangup flag (emulated with --suppress-poll-hangup), the park
+# that is always ready must become a named crash, not a silent hot loop.
 add_test(NAME dispatch_wasi_pipe_eof_hangup
   COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
     --stdin-after "250:ping" crash "$<TARGET_FILE:dispatch_wasi_pipe_eof>"
@@ -238,17 +224,18 @@ add_test(NAME dispatch_wasi_pipe_eof_spin_crash
     "$<TARGET_FILE:dispatch_wasi_pipe_eof>"
     "permanently ready with the sole thread parked"
     "pipe EOF observed")
-# capability guardrail: under a host whose poll_oneoff rejects fd
-# subscriptions (the runner emulates one with --deny-fd-poll), fd-source
-# registration must crash with the named diagnostic instead of hanging
+# Capability guard. When the poll_oneoff of the host rejects fd
+# subscriptions (the runner emulates this with --deny-fd-poll), fd source
+# registration must crash with the named message instead of a hang.
 add_test(NAME dispatch_wasi_fd_poll_denied
   COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
     --deny-fd-poll crash "$<TARGET_FILE:dispatch_wasi_read_source>"
     "does not support file-descriptor readiness")
-# close-while-armed: hosts fail the whole harvest poll with EBADF when an
-# armed source's fd is no longer open (wasmtime's shape, emulated by
-# failing every fd poll after the registration probe); the crash must name
-# the armed-source cause, not a generic poll failure
+# Close while armed. Some hosts fail the whole harvest poll with EBADF when
+# the fd of an armed source is no longer open. wasmtime does this, and the
+# runner emulates it by failing every fd poll after the registration probe.
+# The crash must name the armed source as the cause, not a generic poll
+# failure.
 add_test(NAME dispatch_wasi_fd_closed_while_armed
   COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
     --stdin-after "250:never-read" --fd-poll-ebadf-after 1 crash
@@ -261,8 +248,9 @@ set_tests_properties(dispatch_wasi_read_source dispatch_wasi_fd_wakeup_wait
   dispatch_wasi_pipe_eof_spin_crash dispatch_wasi_fd_poll_denied
   dispatch_wasi_fd_closed_while_armed
   PROPERTIES TIMEOUT 10)
-# walltime deadlines follow host wall-clock changes at the next wake; the
-# runner shifts CLOCK_REALTIME after a delay (--wall-clock-offset)
+# Walltime deadlines follow host wall-clock changes at the next wake. The
+# runner shifts CLOCK_REALTIME after a delay
+# (--wall-clock-offset <delay ms>:<offset ms>).
 foreach(_wall_test forward backward)
   add_executable(dispatch_wasi_wall_timer_${_wall_test}_jump
     wall-timer-${_wall_test}-jump.c)
@@ -270,10 +258,6 @@ foreach(_wall_test forward backward)
     PRIVATE -fblocks -Wall)
   target_link_libraries(dispatch_wasi_wall_timer_${_wall_test}_jump
     PRIVATE dispatch)
-  target_link_options(dispatch_wasi_wall_timer_${_wall_test}_jump PRIVATE
-    -nodefaultlibs
-    -lc
-    "${DISPATCH_WASI_BUILTINS}")
 endforeach()
 add_test(NAME dispatch_wasi_wall_timer_forward_jump
   COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
@@ -300,10 +284,6 @@ set_tests_properties(dispatch_wasi_runner_early_exit PROPERTIES TIMEOUT 10)
 add_executable(dispatch_wasi_clean_c_consumer clean-consumer.c)
 target_compile_options(dispatch_wasi_clean_c_consumer PRIVATE -fblocks -Wall)
 target_link_libraries(dispatch_wasi_clean_c_consumer PRIVATE dispatch)
-target_link_options(dispatch_wasi_clean_c_consumer PRIVATE
-  -nodefaultlibs
-  -lc
-  "${DISPATCH_WASI_BUILTINS}")
 add_test(NAME dispatch_wasi_clean_c_consumer
   COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
     success "$<TARGET_FILE:dispatch_wasi_clean_c_consumer>" "consumer OK")
@@ -418,8 +398,8 @@ add_wasi_test(dispatch_wasi_once_corrupt_predicate once-corrupt-predicate.c cras
   "single-threaded WASI: corrupt lock value" 5 "garbage predicate set")
 add_wasi_test(dispatch_wasi_constructor_main_queue constructor-main-queue.c
   success "constructor main queue OK" 5)
-# crash reasons reach stderr whatever LIBDISPATCH_LOG says: a wasm trap
-# carries no payload, so a disabled or redirected log must not hide them
+# Crash reasons reach stderr for every LIBDISPATCH_LOG value. A wasm trap
+# carries no payload, so a disabled or redirected log must not hide them.
 add_wasi_test(dispatch_wasi_crash_log_disabled crash-log-env.c crash
   "BUG IN CLIENT OF LIBDISPATCH: Over-resume of an object" 5
   "crash log env NO armed")
@@ -433,10 +413,6 @@ target_compile_definitions(dispatch_wasi_crash_log_file PRIVATE
   "CRASH_LOG_ENV=\"file\"")
 target_compile_options(dispatch_wasi_crash_log_file PRIVATE -fblocks -Wall)
 target_link_libraries(dispatch_wasi_crash_log_file PRIVATE dispatch)
-target_link_options(dispatch_wasi_crash_log_file PRIVATE
-  -nodefaultlibs
-  -lc
-  "${DISPATCH_WASI_BUILTINS}")
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/crash-log-var-tmp")
 add_test(NAME dispatch_wasi_crash_log_file
   COMMAND "${NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/run-wasi-test.mjs"
@@ -448,9 +424,10 @@ set_tests_properties(dispatch_wasi_crash_log_file PROPERTIES TIMEOUT 5)
 if(NOT DISPATCH_WASI_NODE_OK)
   set_tests_properties(dispatch_wasi_crash_log_file PROPERTIES DISABLED TRUE)
 endif()
-# allocation failure: the sole thread cannot free memory while it sleeps, so
-# the inherited sleep-and-retry loop must become a named crash, not a hang.
-# A small --max-memory makes the module memory cap reachable in milliseconds.
+# Allocation failure must be a named crash, not a hang. The sole thread
+# cannot free memory while it sleeps, so the inherited sleep-and-retry loop
+# never succeeds. A small --max-memory (16 MiB) lets the test reach the
+# memory limit in milliseconds. alloc-failure.c uses the same limit.
 add_wasi_test(dispatch_wasi_alloc_failure alloc-failure.c crash
   "Out of memory: allocation cannot be retried on single-threaded WASI" 5 "heap exhausted")
 add_wasi_test(dispatch_wasi_alloc_failure_async alloc-failure.c crash

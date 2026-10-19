@@ -75,6 +75,8 @@ expect(const char *step, bool more, bool want_more, int want_turns,
 int
 main(void)
 {
+	// Run the turn that registration requested, if any, so each case starts
+	// with no pending work. 64 steps is more than the startup work needs.
 	_dispatch_wasi_event_loop_set_scheduler(count_turn, NULL);
 	while (turns && _dispatch_wasi_event_loop_perform(64, true)) {
 	}
@@ -86,8 +88,8 @@ main(void)
 	expect("one block", _dispatch_wasi_event_loop_perform(1, true),
 			false, 1, 1);
 
-	// A main block that adds one more main block: the first perform has
-	// real work left and requests one more turn; the second perform runs
+	// A main block that adds one more main block. The first perform has
+	// real work left and requests one more turn. The second perform runs
 	// the added block and reports no more work.
 	turns = ran = 0;
 	dispatch_async_f(dispatch_get_main_queue(), NULL, run_and_requeue_once);

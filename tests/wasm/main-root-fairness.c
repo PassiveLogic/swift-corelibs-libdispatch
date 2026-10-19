@@ -29,8 +29,8 @@
  *  2. dispatch_main(). A main tick reposts itself until a global-queue item
  *     and a serial-queue item have both run.
  *
- * A starved root fails after MAX_TICKS main ticks, not on a wall-clock
- * timeout, so the failure is fast and deterministic.
+ * A starved root fails after MAX_TICKS main ticks, not at a wall-clock
+ * timeout. So the failure is fast and deterministic.
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
@@ -109,6 +109,7 @@ main(void)
 	sem = dispatch_semaphore_create(0);
 	dispatch_async_f(dispatch_get_main_queue(), NULL, wait_tick);
 	dispatch_async_f(global, NULL, signal_from_root);
+	// 10 s is a backstop. MAX_TICKS fails a starved run first.
 	if (dispatch_semaphore_wait(sem,
 			dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC))) {
 		printf("FAIL: top-level wait timed out after %d main ticks\n",

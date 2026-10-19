@@ -20,10 +20,10 @@
 
 
 // The host scheduler callback must return without running Dispatch (see
-// private/private.h). A pump point inside it would drain the work that the
-// poking dispatch_async just recorded, on the dispatch_async stack. Every
-// pumping mode must crash with the named diagnostic before the block runs.
-// SCHEDULER_PUMP_MODE selects the call the callback makes:
+// private/private.h). A pump point inside the callback would drain the work
+// that the poking dispatch_async just recorded, on the dispatch_async stack.
+// So each pumping call must crash with the named diagnostic before the block
+// runs. SCHEDULER_PUMP_MODE selects the call that the callback makes:
 //   0 dispatch_semaphore_wait(DISPATCH_TIME_FOREVER)
 //   1 dispatch_semaphore_wait with a 100 ms timeout
 //   2 dispatch_main()
@@ -118,7 +118,8 @@ main(void)
 		printf("FAIL: runs=%d calls=%d\n", block_runs, schedule_calls);
 		return 1;
 	}
-	// the host turn the callback asked for
+	// the host turn that the callback asked for. 8 turns is more than the
+	// two blocks need.
 	for (int turn = 0; turn < 8; turn++) {
 		if (!_dispatch_wasi_event_loop_perform(1, true)) break;
 	}
