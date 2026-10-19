@@ -6196,7 +6196,6 @@ _dispatch_root_queue_drain_deferred_item(dispatch_deferred_items_t ddi
 }
 #endif
 
-#if !defined(__wasi__)
 DISPATCH_NOT_TAIL_CALLED // prevent tailcall (for Instrument DTrace probe)
 static void
 _dispatch_root_queue_drain(dispatch_queue_global_t dq,
@@ -6243,17 +6242,17 @@ _dispatch_root_queue_drain(dispatch_queue_global_t dq,
 	_dispatch_clear_basepri();
 	_dispatch_queue_set_current(NULL);
 }
-#endif // !defined(__wasi__)
 
 #if defined(__wasi__)
 DISPATCH_NOINLINE
 void
 _dispatch_wasi_root_queue_drain(dispatch_queue_global_t dq)
 {
-	// Cooperative stand-in for one worker turn. Limit the turn to one root
-	// item so event_wasi.c can rotate among pending roots between turns.
-	// The turn starts narrowed: when the root item is a lane, the lane runs
-	// one of its items and re-enqueues itself if more remain.
+	// Cooperative stand-in for one worker turn, as _dispatch_worker_thread2
+	// runs it. The WASI narrowing check limits the shared drain loop to one
+	// root item, so event_wasi.c can rotate among pending roots between
+	// turns. When that item is a lane, the lane runs one of its items and
+	// re-enqueues itself if more remain.
 	// The turn takes a worker identity: the worker lock owner id and an
 	// empty frame chain, as _dispatch_main_queue_drain hides the frames of
 	// the code that a CFRunLoop drain interrupts. Otherwise an item that a
@@ -6266,30 +6265,10 @@ _dispatch_wasi_root_queue_drain(dispatch_queue_global_t dq)
 	dispatch_assert(pending >= 0);
 	(void)pending;
 
-	dispatch_priority_t pri = dq->dq_priority;
 	tsd->tid = DISPATCH_WASI_WORKER_TID;
-	_dispatch_thread_frame_push_and_rebase(&dtf, dq, NULL);
-	_dispatch_init_basepri(pri);
-	_dispatch_adopt_wlh_anon();
-
-	dispatch_invoke_context_s dic = { };
-	_dispatch_queue_drain_init_narrowing_check_deadline(&dic, pri);
-	_dispatch_perfmon_start();
-	struct dispatch_object_s *item = _dispatch_root_queue_drain_one(dq);
-	if (item) {
-		_dispatch_continuation_pop_inline(item, &dic,
-				DISPATCH_INVOKE_WORKER_DRAIN |
-						DISPATCH_INVOKE_REDIRECTING_DRAIN, dq);
-		(void)_dispatch_reset_basepri_override();
-	}
-
-	if (pri & DISPATCH_PRIORITY_FLAG_OVERCOMMIT) {
-		_dispatch_perfmon_end(perfmon_thread_worker_oc);
-	} else {
-		_dispatch_perfmon_end(perfmon_thread_worker_non_oc);
-	}
-	_dispatch_reset_wlh();
-	_dispatch_clear_basepri();
+	_dispatch_thread_frame_push_and_rebase(&dtf, (dispatch_queue_t)NULL, NULL);
+	_dispatch_root_queue_drain(dq, dq->dq_priority,
+			DISPATCH_INVOKE_WORKER_DRAIN | DISPATCH_INVOKE_REDIRECTING_DRAIN);
 	_dispatch_thread_frame_pop(&dtf);
 	tsd->tid = old_tid;
 }

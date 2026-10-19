@@ -1448,6 +1448,19 @@ _dispatch_fd_entry_create(dispatch_queue_t q)
 	return fd_entry;
 }
 
+#if defined(__wasi__)
+// Some WASI hosts refuse fd_fdstat_set_flags on stdio and directory handles:
+// wasmtime returns EBADF, and hosts without the call return ENOTSUP or
+// ENOSYS. fstat and F_GETFL succeeded on the fd, so the error is host
+// policy, not a libdispatch bug. The fd stays blocking.
+#define _DISPATCH_IO_SETFL_HOST_ERRORS \
+		case EBADF: case ENOTSUP: case ENOSYS: \
+			orig_flags = -1; \
+			break;
+#else
+#define _DISPATCH_IO_SETFL_HOST_ERRORS
+#endif
+
 static dispatch_fd_entry_t
 _dispatch_fd_entry_create_with_fd(dispatch_fd_t fd, uintptr_t hash)
 {
@@ -1558,31 +1571,14 @@ _dispatch_fd_entry_create_with_fd(dispatch_fd_t fd, uintptr_t hash)
 			});
 		} else {
 			if (orig_flags != -1) {
-#if defined(__wasi__)
-				// Some WASI hosts refuse fd_fdstat_set_flags on stdio and
-				// directory handles: wasmtime returns EBADF, and hosts
-				// without the call return ENOTSUP or ENOSYS. fstat and
-				// F_GETFL succeeded on this fd, so the error is host policy,
-				// not a libdispatch bug. The fd stays blocking.
 				_dispatch_io_syscall_switch(err,
 					fcntl(fd, F_SETFL, orig_flags | O_NONBLOCK),
-					case EBADF: case ENOTSUP: case ENOSYS:
-						orig_flags = -1;
-						break;
+					_DISPATCH_IO_SETFL_HOST_ERRORS
 					default:
 						orig_flags = -1;
 						(void)dispatch_assume_zero(err);
 						break;
 				);
-#else
-				_dispatch_io_syscall_switch(err,
-					fcntl(fd, F_SETFL, orig_flags | O_NONBLOCK),
-					default:
-						orig_flags = -1;
-						(void)dispatch_assume_zero(err);
-						break;
-				);
-#endif
 			}
 
 			_dispatch_stream_init(fd_entry,

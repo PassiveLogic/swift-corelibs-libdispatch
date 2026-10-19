@@ -102,14 +102,12 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
 set(CMAKE_THREAD_PREFER_PTHREAD TRUE)
 set(THREADS_PREFER_PTHREAD_FLAG TRUE)
-if(ANDROID)
+# wasi-libc provides pthread stubs directly. A static-library try_compile
+# cannot prove that by linking. With this result FindThreads takes the stubs
+# from libc and never adds -pthread, which would select the unsupported
+# threaded WASI ABI.
+if(ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "WASI")
   set(CMAKE_HAVE_LIBC_PTHREAD YES)
-elseif(CMAKE_SYSTEM_NAME STREQUAL "WASI")
-  # wasi-libc provides pthread stubs directly. A static-library try_compile
-  # cannot prove that by linking. With this cached result FindThreads takes
-  # the stubs from libc and never adds -pthread, which would select the
-  # unsupported threaded ABI.
-  set(CMAKE_HAVE_LIBC_PTHREAD YES CACHE BOOL "WASI pthread stubs are in libc")
 endif()
 find_package(Threads REQUIRED)
 

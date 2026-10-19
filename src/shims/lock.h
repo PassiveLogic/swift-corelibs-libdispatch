@@ -79,11 +79,13 @@ _dispatch_lock_owner(dispatch_lock lock_value)
 	return lock_value & DLOCK_OWNER_MASK;
 }
 
-#elif defined(__FreeBSD__)
+#elif defined(__FreeBSD__) || defined(__wasi__)
 
+#if defined(__FreeBSD__)
 #include <sys/types.h>
 #include <sys/umtx.h>
 #include <sched.h>
+#endif
 
 typedef uint32_t dispatch_tid;
 typedef uint32_t dispatch_lock;
@@ -139,35 +141,6 @@ static inline dispatch_tid
 _dispatch_lock_owner(dispatch_lock lock_value)
 {
   return lock_value & DLOCK_OWNER_MASK;
-}
-
-#elif defined(__wasi__)
-
-typedef uint32_t dispatch_tid;
-typedef uint32_t dispatch_lock;
-
-#define DLOCK_OWNER_NULL			((dispatch_tid)0)
-#define DLOCK_OWNER_MASK			((dispatch_lock)0xfffffffc)
-#define DLOCK_WAITERS_BIT			((dispatch_lock)0x00000001)
-#define DLOCK_FAILED_TRYLOCK_BIT		((dispatch_lock)0x00000002)
-
-// The sole WASI thread uses two lock owner ids. Code outside any drain and
-// main-queue drains run as DISPATCH_WASI_MAIN_TID, the owner of the
-// thread-bound main queue. A root-queue drain turn runs as
-// DISPATCH_WASI_WORKER_TID, as a worker thread would (see
-// _dispatch_wasi_root_queue_drain). So a work item that a top-level wait
-// pumps does not inherit the main queue, or the queue drain locks and once
-// gates that the interrupted frame holds. The shift keeps each id clear of
-// the low flag bits so the owner encoding survives DLOCK_OWNER_MASK.
-#define DISPATCH_WASI_MAIN_TID			((pid_t)1)
-#define DISPATCH_WASI_WORKER_TID		((pid_t)2)
-#define _dispatch_tid_self()			((dispatch_tid)(_dispatch_get_tsd_base()->tid << 2))
-
-DISPATCH_ALWAYS_INLINE
-static inline dispatch_tid
-_dispatch_lock_owner(dispatch_lock lock_value)
-{
-	return lock_value & DLOCK_OWNER_MASK;
 }
 
 #else
@@ -310,6 +283,17 @@ typedef uint32_t _dispatch_sema4_t;
 #endif
 
 #if defined(__wasi__)
+// The sole WASI thread uses two lock owner ids. Code outside any drain and
+// main-queue drains run as DISPATCH_WASI_MAIN_TID, the owner of the
+// thread-bound main queue. A root-queue drain turn runs as
+// DISPATCH_WASI_WORKER_TID, as a worker thread would (see
+// _dispatch_wasi_root_queue_drain). So a work item that a top-level wait
+// pumps does not inherit the main queue, or the queue drain locks and once
+// gates that the interrupted frame holds. _dispatch_tid_self() shifts each
+// id left by 2, clear of the low flag bits in DLOCK_OWNER_MASK.
+#define DISPATCH_WASI_MAIN_TID			((pid_t)1)
+#define DISPATCH_WASI_WORKER_TID		((pid_t)2)
+
 // Cooperative drain support for single-threaded WASI, implemented in
 // src/event/event_wasi.c: blocking waits drain pending dispatch work and
 // timers instead of blocking the sole thread.
@@ -354,6 +338,14 @@ bool _dispatch_wasi_has_event_sources(void);
 // the caller's next drain. deadline 0 waits for events alone and requires
 // _dispatch_wasi_has_event_sources() to be true.
 void _dispatch_wasi_wait_for_events(uint64_t deadline_uptime_ns);
+// The call that blocked, for the deadlock diagnostics of the WASI wait loop
+// in _dispatch_wait_on_address. The semaphore waits and dispatch_sync pass
+// one of these in the flags argument. dispatch_group_wait,
+// dispatch_block_wait, and dispatch_source_cancel_and_wait pass none.
+#define DLOCK_WASI_WAITER_MASK			((dispatch_lock_options_t)0x00300000)
+#define DLOCK_WASI_WAITER_SEMAPHORE		((dispatch_lock_options_t)0x00100000)
+#define DLOCK_WASI_WAITER_SEMAPHORE_TIMED	((dispatch_lock_options_t)0x00200000)
+#define DLOCK_WASI_WAITER_QUEUE			((dispatch_lock_options_t)0x00300000)
 #endif
 
 void _dispatch_sema4_dispose_slow(_dispatch_sema4_t *sema, int policy);

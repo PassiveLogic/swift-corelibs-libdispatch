@@ -149,7 +149,7 @@ _dispatch_uptime(void)
 {
 #if HAVE_MACH_ABSOLUTE_TIME
 	return mach_absolute_time();
-#elif HAVE_DECL_CLOCK_MONOTONIC && defined(__linux__)
+#elif HAVE_DECL_CLOCK_MONOTONIC && (defined(__linux__) || defined(__wasi__))
 	struct timespec ts;
 	dispatch_assume_zero(clock_gettime(CLOCK_MONOTONIC, &ts));
 	return _dispatch_timespec_to_nano(ts);
@@ -161,10 +161,6 @@ _dispatch_uptime(void)
 	ULONGLONG ullUnbiasedTime;
 	_dispatch_QueryUnbiasedInterruptTimePrecise(&ullUnbiasedTime);
 	return ullUnbiasedTime * 100;
-#elif defined(__wasi__)
-	struct timespec ts;
-	dispatch_assume_zero(clock_gettime(CLOCK_MONOTONIC, &ts));
-	return _dispatch_timespec_to_nano(ts);
 #else
 #error platform needs to implement _dispatch_uptime()
 #endif
