@@ -27,63 +27,78 @@
  * on the caller's stack, and the single-threaded port must not either. A
  * wait with time left still runs the queued work that satisfies it. An
  * expired wait leaves no stranded semaphore count.
- *
- * Each check exits with its own status, so the status names the failed check.
  */
 #include <dispatch/dispatch.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <stdint.h>
 
-static int ran;
+#include <bsdtests.h>
+#include "dispatch_test.h"
 
-static void
-check(int ok, int code, const char *what, intptr_t r)
-{
-	if (!ok) {
-		printf("FAIL: %s (r=%ld ran=%d)\n", what, (long)r, ran);
-		exit(code);
-	}
-}
+static long ran;
 
 int
 main(void)
 {
-	dispatch_queue_t q = dispatch_queue_create("expired-wait", NULL);
-	dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-	dispatch_group_t g = dispatch_group_create();
-	intptr_t r;
+	dispatch_test_start("Dispatch WASI Expired Wait");
 
-	dispatch_async(q, ^{ ran++; });
-	dispatch_async(q, ^{ ran++; });
+	dispatch_queue_t queue = dispatch_queue_create("wasi.expired_wait",
+			DISPATCH_QUEUE_SERIAL);
+	dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+	dispatch_group_t group = dispatch_group_create();
+	long result;
 
-	r = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 0));
-	check(r != 0 && ran == 0, 1, "semaphore wait at a deadline of now", r);
+	dispatch_async(queue, ^{ ran++; });
+	dispatch_async(queue, ^{ ran++; });
 
-	r = dispatch_semaphore_wait(sem,
-			dispatch_time(DISPATCH_TIME_NOW, -(int64_t)NSEC_PER_MSEC));
-	check(r != 0 && ran == 0, 2, "semaphore wait at a past deadline", r);
+	result = dispatch_semaphore_wait(semaphore,
+			dispatch_time(DISPATCH_TIME_NOW, 0));
+	test_long("semaphore wait at a deadline of now times out", !result, 0);
+	test_long("semaphore wait at a deadline of now runs no queued work",
+			ran, 0);
 
-	dispatch_group_enter(g);
-	r = dispatch_group_wait(g, dispatch_time(DISPATCH_TIME_NOW, 0));
-	check(r != 0 && ran == 0, 3, "group wait at a deadline of now", r);
-	dispatch_group_leave(g);
+	result = dispatch_semaphore_wait(semaphore, dispatch_time(
+			DISPATCH_TIME_NOW, -(int64_t)NSEC_PER_MSEC));
+	test_long("semaphore wait at a past deadline times out", !result, 0);
+	test_long("semaphore wait at a past deadline runs no queued work", ran,
+			0);
+
+	dispatch_group_enter(group);
+	result = dispatch_group_wait(group,
+			dispatch_time(DISPATCH_TIME_NOW, 0));
+	test_long("group wait at a deadline of now times out", !result, 0);
+	test_long("group wait at a deadline of now runs no queued work", ran,
+			0);
+	dispatch_group_leave(group);
 
 	// the queued signal is not run by the expired wait
-	dispatch_async(q, ^{ ran++; dispatch_semaphore_signal(sem); });
-	r = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 0));
-	check(r != 0 && ran == 0, 4, "expired wait ran the signaling item", r);
+	dispatch_async(queue, ^{
+		ran++;
+		dispatch_semaphore_signal(semaphore);
+	});
+	result = dispatch_semaphore_wait(semaphore,
+			dispatch_time(DISPATCH_TIME_NOW, 0));
+	test_long("expired semaphore wait times out with a signal queued",
+			!result, 0);
+	test_long("expired semaphore wait does not run the queued signaling "
+			"item", ran, 0);
 
 	// a wait with time left runs the three queued items and consumes the
 	// signal. 2 s is far longer than the items need.
-	r = dispatch_semaphore_wait(sem,
-			dispatch_time(DISPATCH_TIME_NOW, 2 * (int64_t)NSEC_PER_SEC));
-	check(r == 0 && ran == 3, 5, "timed wait with time left", r);
+	result = dispatch_semaphore_wait(semaphore,
+			dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
+	test_long("timed wait with time left is satisfied by the queued signal",
+			result, 0);
+	test_long("timed wait with time left runs the three queued items", ran,
+			3);
 
 	// the expired waits left no stranded count behind
-	r = dispatch_semaphore_wait(sem, DISPATCH_TIME_NOW);
-	check(r != 0, 6, "stranded semaphore count", r);
+	result = dispatch_semaphore_wait(semaphore, DISPATCH_TIME_NOW);
+	test_long("expired waits leave no stranded semaphore count", !result,
+			0);
 
-	printf("expired wait OK\n");
+	dispatch_release(group);
+	dispatch_release(semaphore);
+	dispatch_release(queue);
+	test_stop();
 	return 0;
 }

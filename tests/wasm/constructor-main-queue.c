@@ -21,7 +21,7 @@
 /*
  * A client constructor sees an initialized libdispatch. WASI links
  * libdispatch statically. wasm-ld runs default-priority constructors in link
- * order, and client objects come first. So libdispatch_init runs at priority
+ * order, and client objects come first. So _libdispatch_init runs at priority
  * 101, and a default-priority client constructor sees a bound main queue.
  * A shared libdispatch on Linux and libSystem on Darwin give the same result.
  *
@@ -33,85 +33,88 @@
  *    wait). The constructor gets that work, and the main-queue drain does
  *    not crash.
  *  - the deferred main-queue block runs on the main queue
+ *
+ * The constructor runs before main, so it records what it sees in static
+ * variables and a main-queue block asserts them under dispatch_main().
  */
 #include <dispatch/dispatch.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
+#include <bsdtests.h>
+#include "dispatch_test.h"
+
 // the label of the main queue
-static const char MAIN_LABEL[] = "com.apple.main-thread";
+static const char main_label[] = "com.apple.main-thread";
 
 // the constructor posts this many global-queue blocks and one main block
 #define GLOBAL_BLOCKS 2
 
-static const char *g_ctor_label;
-static const char *g_main_block_label;
-static int g_main_block_runs;
-static int g_global_block_runs;
+static const char *ctor_label;
+static const char *main_block_label;
+static long main_block_runs;
+static long global_block_runs;
+static long ctor_group_wait_result;
 
 __attribute__((constructor))
 static void
 client_constructor(void)
 {
-	g_ctor_label = dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL);
+	ctor_label = dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL);
 	dispatch_assert_queue(dispatch_get_main_queue());
 
 	dispatch_async(dispatch_get_main_queue(), ^{
-		g_main_block_label =
-				dispatch_queue_get_label(DISPATCH_CURRENT_QUEUE_LABEL);
-		g_main_block_runs++;
+		main_block_label = dispatch_queue_get_label(
+				DISPATCH_CURRENT_QUEUE_LABEL);
+		main_block_runs++;
 	});
 
-	dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT,
-			0), ^{
-		g_global_block_runs++;
-		dispatch_semaphore_signal(sem);
+	dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+	dispatch_async(dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+		global_block_runs++;
+		dispatch_semaphore_signal(semaphore);
 	});
-	dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
-	dispatch_release(sem);
+	dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+	dispatch_release(semaphore);
 
 	dispatch_group_t group = dispatch_group_create();
 	dispatch_group_async(group, dispatch_get_global_queue(
 			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-		g_global_block_runs++;
+		global_block_runs++;
 	});
 	// 1 s is far longer than the work needs
-	if (dispatch_group_wait(group,
-			dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC))) {
-		printf("FAIL: timed group wait in a constructor timed out\n");
-		exit(1);
-	}
+	ctor_group_wait_result = dispatch_group_wait(group,
+			dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC));
 	dispatch_release(group);
 }
 
 static void
-check(void *ctxt)
+check(void *context)
 {
-	(void)ctxt;
-	if (!g_ctor_label || strcmp(g_ctor_label, MAIN_LABEL)) {
-		printf("FAIL: constructor queue label %s\n",
-				g_ctor_label ? g_ctor_label : "(null)");
-		exit(1);
-	}
-	if (g_global_block_runs != GLOBAL_BLOCKS) {
-		printf("FAIL: global blocks ran %d times\n", g_global_block_runs);
-		exit(1);
-	}
-	if (g_main_block_runs != 1 || !g_main_block_label ||
-			strcmp(g_main_block_label, MAIN_LABEL)) {
-		printf("FAIL: main block ran %d times on %s\n", g_main_block_runs,
-				g_main_block_label ? g_main_block_label : "(null)");
-		exit(1);
-	}
-	printf("constructor main queue OK\n");
-	exit(0);
+	(void)context;
+	test_ptr_notnull("constructor reads its current queue label",
+			ctor_label);
+	test_long("constructor runs with the main queue label",
+			strcmp(ctor_label ? ctor_label : "", main_label), 0);
+	test_long("timed group wait in the constructor returns 0 within 1 s",
+			ctor_group_wait_result, 0);
+	test_long("constructor waits run both global-queue blocks",
+			global_block_runs, GLOBAL_BLOCKS);
+	test_long("deferred main-queue block of the constructor runs once",
+			main_block_runs, 1);
+	test_ptr_notnull("deferred main-queue block reads its current queue "
+			"label", main_block_label);
+	test_long("deferred main-queue block runs with the main queue label",
+			strcmp(main_block_label ? main_block_label : "",
+			main_label), 0);
+	test_stop();
 }
 
 int
 main(void)
 {
+	dispatch_test_start("Dispatch WASI Constructor Main Queue");
+
 	// Blocking waits never drain the main queue. So the main-queue block of
 	// the constructor runs first in dispatch_main(). This check runs after
 	// it, because the main queue is FIFO.

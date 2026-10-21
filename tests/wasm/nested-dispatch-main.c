@@ -18,21 +18,25 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
+/*
+ * A dispatch_main() call from within a drained work item must crash at
+ * once: drains do not nest. An armed timer keeps the outer loop parked. The
+ * timer must not turn the crash into a sleep or a spin.
+ */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
 
 int
 main(void)
 {
-	// An armed timer keeps the outer loop parked. Without the nested guard,
-	// the inner dispatch_main() could never merge this timer: it slept to
-	// the deadline once, then spun at full CPU forever.
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_MSEC),
-			dispatch_get_main_queue(), ^{ puts("timer must not fire"); });
-	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+			dispatch_get_main_queue(), ^{
+		puts("timer must not fire");
+	});
+	dispatch_async(dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
 		puts("nested dispatch_main starting");
 		fflush(stdout);
-		// drains do not nest, so this call must crash at once
 		dispatch_main();
 	});
 	dispatch_main();

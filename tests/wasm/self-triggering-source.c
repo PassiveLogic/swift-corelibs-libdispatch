@@ -25,75 +25,65 @@
  * overcommit thread, because another thread serves the rest. On WASI the
  * source must re-queue after each handler call, so a timed wait still times
  * out near its deadline.
- *
- * Each check exits with its own status, so the status names the failed check.
  */
 #include <dispatch/dispatch.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <stdint.h>
-#include <time.h>
+
+#include <bsdtests.h>
+#include "dispatch_test.h"
+#include "wasi-test.h"
 
 // The wait deadline, and the longest a correct wait can take on a slow host.
 #define WAIT_MS 50
 #define WAIT_LATE_MS 1000
 
-static volatile int stop;
+static int stop;
 static long handler_calls;
-
-static uint64_t
-now_ms(void)
-{
-	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return ((uint64_t)ts.tv_sec * NSEC_PER_SEC + (uint64_t)ts.tv_nsec) /
-			NSEC_PER_MSEC;
-}
-
-static void
-check(int ok, int code, const char *what)
-{
-	if (!ok) {
-		printf("FAIL: %s (handler calls %ld)\n", what, handler_calls);
-		exit(code);
-	}
-}
 
 int
 main(void)
 {
-	dispatch_source_t s = dispatch_source_create(
+	dispatch_test_start("Dispatch WASI Self Triggering Source");
+
+	dispatch_source_t source = dispatch_source_create(
 			DISPATCH_SOURCE_TYPE_DATA_ADD, 0, 0, NULL);
 	dispatch_semaphore_t never = dispatch_semaphore_create(0);
 	dispatch_semaphore_t cancelled = dispatch_semaphore_create(0);
 
-	dispatch_source_set_event_handler(s, ^{
+	dispatch_source_set_event_handler(source, ^{
 		handler_calls++;
-		if (!stop) dispatch_source_merge_data(s, 1);
+		if (!stop) {
+			dispatch_source_merge_data(source, 1);
+		}
 	});
-	dispatch_source_set_cancel_handler(s, ^{
+	dispatch_source_set_cancel_handler(source, ^{
 		dispatch_semaphore_signal(cancelled);
 	});
-	dispatch_resume(s);
-	dispatch_source_merge_data(s, 1);
+	dispatch_resume(source);
+	dispatch_source_merge_data(source, 1);
 
 	// Nothing signals this semaphore. The wait runs the source until the
 	// deadline, then times out.
-	uint64_t start = now_ms();
-	long r = dispatch_semaphore_wait(never,
-			dispatch_time(DISPATCH_TIME_NOW, WAIT_MS * (int64_t)NSEC_PER_MSEC));
-	uint64_t elapsed = now_ms() - start;
-	check(r != 0, 1, "the wait did not time out");
-	check(elapsed < WAIT_LATE_MS, 2, "the source kept the thread past the "
-			"wait deadline");
-	check(handler_calls > 1, 3, "the handler did not run again");
+	uint64_t start = wasi_test_now_ns();
+	long result = dispatch_semaphore_wait(never, dispatch_time(
+			DISPATCH_TIME_NOW, WAIT_MS * NSEC_PER_MSEC));
+	long elapsed_ms = (long)((wasi_test_now_ns() - start) / NSEC_PER_MSEC);
+	test_long("timed wait that nothing signals times out", !result, 0);
+	test_long_less_than_or_equal("source yields the thread so the wait "
+			"returns within 1000 ms", elapsed_ms, WAIT_LATE_MS);
+	test_long_greater_than_or_equal("event handler runs again after it "
+			"merges data into its own source", handler_calls, 2);
 
 	stop = 1;
-	dispatch_source_cancel(s);
-	r = dispatch_semaphore_wait(cancelled,
-			dispatch_time(DISPATCH_TIME_NOW, 2 * (int64_t)NSEC_PER_SEC));
-	check(r == 0, 4, "the source did not finish its cancel");
+	dispatch_source_cancel(source);
+	result = dispatch_semaphore_wait(cancelled,
+			dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC));
+	test_long("cancel handler runs before the 2 s wait times out", result,
+			0);
 
-	printf("self-triggering source OK\n");
+	dispatch_release(source);
+	dispatch_release(never);
+	dispatch_release(cancelled);
+	test_stop();
 	return 0;
 }

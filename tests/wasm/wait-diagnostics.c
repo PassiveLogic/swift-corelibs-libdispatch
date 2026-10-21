@@ -18,28 +18,30 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
-// Each indefinite-wait deadlock diagnostic names the public call that
-// blocked. Each build selects one crash case:
-//  - WAIT_DIAG_SYNC: a dispatch_sync waits behind queued work
-//  - WAIT_DIAG_GROUP: a dispatch_group_wait waits
-//  - WAIT_DIAG_CANCEL: dispatch_source_cancel_and_wait waits on a timer
-// Each wait runs inside a drained work item, so nothing can satisfy it.
-// nested-wait.c covers the dispatch_semaphore_wait case.
-
+/*
+ * Each indefinite-wait deadlock diagnostic names the public call that
+ * blocked. Each build selects one crash case:
+ *  - WAIT_DIAG_SYNC: a dispatch_sync waits behind queued work
+ *  - WAIT_DIAG_GROUP: a dispatch_group_wait waits
+ *  - WAIT_DIAG_CANCEL: dispatch_source_cancel_and_wait waits on a timer
+ * Each wait runs inside a drained work item, so nothing can satisfy it.
+ * nested-wait.c covers the dispatch_semaphore_wait case.
+ */
 #include <dispatch/dispatch.h>
+#include <dispatch/private.h>
 #include <stdio.h>
-
-// declared in private/source_private.h in this tree
-extern void dispatch_source_cancel_and_wait(dispatch_source_t source);
 
 int
 main(void)
 {
-	dispatch_queue_t global = dispatch_get_global_queue(0, 0);
+	dispatch_queue_t global = dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
 #if WAIT_DIAG_SYNC
-	dispatch_queue_t queue = dispatch_queue_create("wasi.wait.diag", NULL);
+	dispatch_queue_t queue = dispatch_queue_create("wasi.wait.diag",
+			DISPATCH_QUEUE_SERIAL);
 	dispatch_async(global, ^{
 		puts("nested sync starting");
+		fflush(stdout);
 		dispatch_async(queue, ^{});
 		dispatch_sync(queue, ^{});
 	});
@@ -48,10 +50,12 @@ main(void)
 	dispatch_group_enter(group);
 	dispatch_async(global, ^{
 		puts("nested group wait starting");
+		fflush(stdout);
 		dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
 	});
 #elif WAIT_DIAG_CANCEL
-	dispatch_queue_t queue = dispatch_queue_create("wasi.wait.diag", NULL);
+	dispatch_queue_t queue = dispatch_queue_create("wasi.wait.diag",
+			DISPATCH_QUEUE_SERIAL);
 	dispatch_source_t timer = dispatch_source_create(
 			DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
 	// 60 s: the timer must not fire during the test
@@ -61,6 +65,7 @@ main(void)
 	dispatch_activate(timer);
 	dispatch_async(global, ^{
 		puts("nested cancel_and_wait starting");
+		fflush(stdout);
 		// a timer source always waits for the manager to unregister it
 		dispatch_source_cancel_and_wait(timer);
 	});

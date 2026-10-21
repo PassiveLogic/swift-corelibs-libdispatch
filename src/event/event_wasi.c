@@ -39,29 +39,14 @@
 #error the WASI event backend assumes a single-threaded (wasip1) target
 #endif
 
-// Single-threaded WASI (wasm32-unknown-wasip1) has no manager thread, no
-// worker threads, and no blocking wait primitive. This backend drains queues
-// cooperatively instead.
-//
-// A poke only records pending work, so dispatch_async never runs a block
-// before it returns. The sole thread drains work at a pump point: a
-// blocking-wait loop in shims/lock.c, dispatch_main(), or
-// _dispatch_wasi_event_loop_perform() from a host event loop (see
-// private/private.h). A poke outside any drain asks a registered host
-// scheduler for one turn.
-//
-// A drain step runs the first phase that has work, in this order:
-//  1. due timers, because they unblock waits and refill the queues
-//  2. the manager queue, because it arms timers and finishes source setup
-//  3. the main queue, only in dispatch_main() and a host turn
-//  4. one item from a pending root queue
-// No queue can hold the sole thread. Main and root steps alternate. Root
-// scans rotate down from the highest QoS. Manager and main phases drain a
-// snapshot. A serial queue runs one item per phase, then takes the
-// narrowing exit in queue.c back to its target queue.
-//
-// Timers keep the generic heap. This backend tracks only the nearest armed
-// deadline per clock, so an idle wait can sleep until a timer is due.
+// Single-threaded WASI has no worker or manager thread. A poke only records
+// pending work. The sole thread drains it at a pump point: a blocking wait
+// (shims/lock.c), dispatch_main(), or _dispatch_wasi_event_loop_perform().
+// One drain step runs the first phase with work: due timers, the manager
+// queue, the main queue (not from a blocking wait), one root item.
+// Main and root steps alternate. Roots are served round-robin, so QoS orders
+// only the first pass.
+// Timers use the shared heap. Only the nearest deadline per clock is kept.
 
 struct _dispatch_wasi_timeout_s {
 	uint64_t dwt_deadline; // in the timer's own clock domain
@@ -74,29 +59,20 @@ static bool _dispatch_wasi_root_pending[DISPATCH_ROOT_QUEUE_COUNT];
 static size_t _dispatch_wasi_next_root = DISPATCH_ROOT_QUEUE_COUNT - 1;
 static bool _dispatch_wasi_main_pending;
 static bool _dispatch_wasi_mgr_pending;
-// True after a main-queue step, false after a root step. While it is true,
-// a pending root runs before the main queue.
 static bool _dispatch_wasi_main_ran_last;
-// True while a drain step runs. A poke then records work but does not
-// request a host turn. The running pump picks the work up. perform requests
-// the follow-up turn after it knows if work remains.
+// A poke inside a drain step records work only. The running pump takes it.
 static bool _dispatch_wasi_draining;
 // True while the poll harvest walks the muxnote list. Pokes then only record
-// work, as during a drain step. Otherwise the handler of a merge poke could
-// cancel a source and free the muxnotes that the harvest walks.
+// work, as in a drain step, so a merge handler cannot free the muxnotes that
+// the harvest walks.
 static bool _dispatch_wasi_harvesting;
-// Host event loop registration. With a scheduler, a poke outside any drain
-// requests one host turn. Requests coalesce on
-// _dispatch_wasi_host_turn_scheduled until a perform call consumes the turn.
-// Without a scheduler, pending work waits for the next pump point.
 static void (*_dispatch_wasi_host_schedule)(void *);
 static void *_dispatch_wasi_host_context;
 static bool _dispatch_wasi_host_turn_scheduled;
 static bool _dispatch_wasi_host_schedule_in_progress;
 static bool _dispatch_wasi_performing;
-// Set at registration when a timer is already armed. The host reads timer
-// deadlines only after a perform call, so that timer needs one host turn
-// even when no work can run. The next perform call clears it.
+// A timer armed before registration needs one host turn, because the host
+// reads the timer delay only after a perform call.
 static bool _dispatch_wasi_armed_timer_unseen;
 
 static void
@@ -127,9 +103,7 @@ _dispatch_wasi_work_pending(void)
 			_dispatch_wasi_root_work_pending();
 }
 
-// True when one more drain step can act without a wait: pending queue work,
-// a dirty timer heap, or a due timer. The clock read comes last, and only
-// when a timer is armed.
+// True when another drain step can act without a wait.
 static bool
 _dispatch_wasi_has_runnable_work(void)
 {
@@ -139,11 +113,8 @@ _dispatch_wasi_has_runnable_work(void)
 	return next_timer && next_timer <= _dispatch_uptime();
 }
 
-// The single choke point for the submission policy: a poke records pending
-// work and never drains. Outside any drain, harvest, or perform, it asks a
-// registered host scheduler for one turn. Inside a drain or a harvest, the
-// running pump picks the work up (see _dispatch_wasi_harvesting), and
-// perform decides after its last step.
+// A poke records work and never drains. Outside a drain, a harvest, or
+// perform, it asks a registered host scheduler for one turn.
 static void
 _dispatch_wasi_note_pending(void)
 {
@@ -153,11 +124,9 @@ _dispatch_wasi_note_pending(void)
 	}
 }
 
-// Runs when a drain step or a harvest ends outside perform. It asks the host
-// for a turn when a stopped pump (a satisfied or timed-out wait) left
-// runnable work, or when a timer was armed before registration. The cheap
-// checks come first. With no scheduler or a turn outstanding, it makes no
-// scan or clock read.
+// After a drain step or a harvest outside perform, ask the host for a turn if
+// work remains or a timer was armed before registration. A pump that keeps
+// running can leave that turn empty.
 static void
 _dispatch_wasi_hand_off_pending(void)
 {
@@ -734,13 +703,10 @@ _dispatch_event_loop_timer_delete(dispatch_timer_heap_t dth DISPATCH_UNUSED,
 	_dispatch_wasi_timeout[DISPATCH_TIMER_CLOCK(tidx)].dwt_armed = false;
 }
 
-// Returns the nearest armed deadline in the _dispatch_uptime() domain, or 0
-// when no timer is armed. A deadline on another clock is projected onto
-// uptime with the current reading of that clock. Only that case reads the
-// clocks. A pump point sleeps toward the result with one relative host sleep.
-// WASI has no clock-change notification, so a wall-clock change or a host
-// suspend takes effect when that sleep ends. The next wake then fires an
-// overdue wall timer. A backward change never fires a timer early.
+// Returns the nearest armed deadline in the _dispatch_uptime() domain, or 0.
+// A deadline on another clock is projected with that clock's current value.
+// WASI has no clock-change notification, so a wall-clock change takes
+// effect at the next wake.
 uint64_t
 _dispatch_wasi_next_timer_ns(void)
 {
@@ -777,10 +743,9 @@ _dispatch_wasi_merge_due_timers(void)
 
 #pragma mark sleeping
 
-// A clock sleep needs poll_oneoff clock subscriptions. Without them (as in
-// WasmKit 0.1.x), every sleep fails at once, and some runtimes log each
-// failure. After the first failure, sleeps log one warning and return at
-// once. Waits stay correct because each caller loops to its own deadline.
+// Without poll_oneoff clock support (as in WasmKit 0.1.x) every sleep fails.
+// After the first failure, log once and return at once. Each caller loops to
+// its own deadline.
 static bool _dispatch_wasi_cannot_sleep;
 
 void
@@ -794,14 +759,11 @@ _dispatch_wasi_sleep_until(uint64_t uptime_ns)
 		.tv_nsec = (long)(delta % NSEC_PER_SEC),
 	};
 	// Sleep on the clock that _dispatch_uptime() reads. wasi-libc nanosleep()
-	// uses CLOCK_REALTIME, so a wall-clock change would stretch it.
-	// clock_nanosleep() returns an error number and does not set errno.
-	// WASI delivers no asynchronous signals, so EINTR cannot occur.
+	// uses CLOCK_REALTIME. clock_nanosleep() returns the error, not errno.
 	int rc = clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL);
 	if (unlikely(rc != 0)) {
 		_dispatch_wasi_cannot_sleep = true;
-		_dispatch_log("libdispatch: this WASI runtime cannot sleep "
-				"(clock_nanosleep error %d); waits poll the clock instead",
+		_dispatch_log("clock_nanosleep() failed (%d), waits poll the clock",
 				rc);
 	}
 }
@@ -849,27 +811,23 @@ _dispatch_wasi_wait_for_events(uint64_t deadline_uptime_ns)
 
 #pragma mark cooperative drain
 
-static bool
+bool
 _dispatch_wasi_drain_step(bool include_main)
 {
-	// The host scheduler callback must return without running Dispatch (see
-	// private/private.h). A pump point inside it would run client blocks on
-	// the stack of the dispatch_async call that requested the host turn.
+	// The scheduler callback must not run Dispatch. A pump inside it would
+	// run blocks on the stack of the dispatch_async that asked for the turn.
 	if (unlikely(_dispatch_wasi_host_schedule_in_progress)) {
-		DISPATCH_CLIENT_CRASH(0, "WASI event loop scheduler drained "
-				"Dispatch inline");
+		DISPATCH_CLIENT_CRASH(0, "Scheduler ran Dispatch inline");
 	}
 	if (_dispatch_wasi_draining) {
-		// No nested drains. The queue state machinery (thread frames, wlh,
-		// dq_state drain locks) is not reentrant on the sole thread. The
-		// outer drain picks up the deferred work.
+		// Drains do not nest, because the queue state machinery is not
+		// reentrant. The outer drain takes the work.
 		return false;
 	}
 	_dispatch_wasi_draining = true;
 
-	// Step 1: Hide a borrowed wlh from the drains, which adopt and reset
-	// their own. dispatch_async_and_wait runs a top-level wait under
-	// _dispatch_fake_wlh, without a reference. Never release that value.
+	// Step 1: Hide a borrowed wlh, such as the _dispatch_fake_wlh of
+	// dispatch_async_and_wait, from the drains. Never release it.
 	void *borrowed_wlh = _dispatch_thread_getspecific(dispatch_wlh_key);
 	_dispatch_thread_setspecific(dispatch_wlh_key, NULL);
 
@@ -877,8 +835,7 @@ _dispatch_wasi_drain_step(bool include_main)
 	bool did_work = true;
 	if (_dispatch_wasi_merge_due_timers() ||
 			_dispatch_timers_heap[0].dth_dirty_bits) {
-		// A due timer counts as work for this step (see shims/lock.h). Firing
-		// it pushes the handler of the timer source onto its target queue.
+		// A due timer counts as work. Firing it queues the timer handler.
 		_dispatch_event_loop_drain_timers(_dispatch_timers_heap,
 				DISPATCH_TIMER_COUNT);
 	} else if (_dispatch_wasi_mgr_pending) {
@@ -894,9 +851,8 @@ _dispatch_wasi_drain_step(bool include_main)
 		_dispatch_wasi_main_queue_drain();
 	} else {
 		did_work = false;
-		// Scan down from _dispatch_wasi_next_root. While other roots wait,
-		// the next scan starts below the root that ran, so a queue that
-		// refills itself cannot starve the others.
+		// Round-robin: while other roots wait, the next scan starts below the
+		// root that ran.
 		for (size_t offset = 0;
 				offset < countof(_dispatch_wasi_root_pending); offset++) {
 			size_t i = (_dispatch_wasi_next_root +
@@ -928,16 +884,6 @@ _dispatch_wasi_drain_step(bool include_main)
 	return did_work;
 }
 
-// The step of the blocking-wait loops in shims/lock.c. It leaves the main
-// queue pending, because a top-level wait is main-thread code. A registered
-// host scheduler gets that work in a later turn (see
-// _dispatch_wasi_hand_off_pending).
-bool
-_dispatch_wasi_drain_one(void)
-{
-	return _dispatch_wasi_drain_step(false);
-}
-
 bool
 _dispatch_wasi_main_queue_pending(void)
 {
@@ -962,7 +908,7 @@ _dispatch_wasi_root_queue_poke(dispatch_queue_global_t dq)
 {
 	size_t idx = (size_t)(dq - _dispatch_root_queues);
 	if (unlikely(idx >= DISPATCH_ROOT_QUEUE_COUNT)) {
-		DISPATCH_INTERNAL_CRASH(dq, "Poke of a non-global root queue on WASI");
+		DISPATCH_INTERNAL_CRASH(dq, "Poke of a non-global root queue");
 	}
 	_dispatch_wasi_root_pending[idx] = true;
 	_dispatch_wasi_note_pending();
@@ -982,13 +928,12 @@ _dispatch_wasi_event_loop_set_scheduler(
 		dispatch_wasi_event_loop_schedule_t schedule, void *context)
 {
 	if (_dispatch_wasi_host_schedule) {
-		DISPATCH_CLIENT_CRASH(0, "WASI event loop scheduler already registered");
+		DISPATCH_CLIENT_CRASH(0, "Scheduler already registered");
 	}
 	_dispatch_wasi_host_schedule = schedule;
 	_dispatch_wasi_host_context = context;
-	// Hand over earlier work, for example from static initializers or an
-	// early export, and any timer that a pump armed. Inside a drain, the
-	// running pump hands the work over when its step ends.
+	// Hand over work and timers from before registration. Inside a drain,
+	// the running pump does it when its step ends.
 	_dispatch_wasi_armed_timer_unseen = _dispatch_wasi_next_timer_ns() != 0;
 	_dispatch_wasi_hand_off_pending();
 }
@@ -997,18 +942,18 @@ bool
 _dispatch_wasi_event_loop_perform(unsigned long max_steps,
 		bool consumes_scheduled_turn)
 {
-	// Step 1: Crash on a call that private/private.h does not allow.
+	// Step 1: Crash on a call that the SPI does not allow.
 	if (!_dispatch_wasi_host_schedule) {
-		DISPATCH_CLIENT_CRASH(0, "WASI event loop scheduler is not registered");
+		DISPATCH_CLIENT_CRASH(0, "Scheduler not registered");
 	}
 	if (!max_steps) {
-		DISPATCH_CLIENT_CRASH(0, "WASI event loop perform requires a nonzero budget");
+		DISPATCH_CLIENT_CRASH(0, "Zero step budget");
 	}
 	if (_dispatch_wasi_host_schedule_in_progress) {
-		DISPATCH_CLIENT_CRASH(0, "WASI event loop scheduler invoked perform inline");
+		DISPATCH_CLIENT_CRASH(0, "Perform called from the scheduler");
 	}
 	if (_dispatch_wasi_draining || _dispatch_wasi_harvesting) {
-		DISPATCH_CLIENT_CRASH(0, "WASI event loop perform is not reentrant");
+		DISPATCH_CLIENT_CRASH(0, "Perform called from a work item");
 	}
 
 	// Step 2: Consume the turn if this call owns it. Clear the timer latch.
@@ -1063,7 +1008,7 @@ _dispatch_event_loop_poke(dispatch_wlh_t wlh,
 	// Without DISPATCH_USE_KEVENT_WORKLOOP, every poke caller passes
 	// DISPATCH_WLH_MANAGER.
 	DISPATCH_INTERNAL_CRASH((uintptr_t)wlh,
-			"unexpected non-manager event loop poke on WASI");
+			"Unexpected non-manager event loop poke");
 }
 
 DISPATCH_NOINLINE
@@ -1072,7 +1017,7 @@ _dispatch_event_loop_drain(uint32_t flags DISPATCH_UNUSED)
 {
 	// Only the manager thread loop calls this, and it never runs on WASI.
 	// _dispatch_wasi_mgr_queue_drain drains the manager queue instead.
-	DISPATCH_INTERNAL_CRASH(0, "manager event loop cannot run on WASI");
+	DISPATCH_INTERNAL_CRASH(0, "Manager event loop cannot run");
 }
 
 void

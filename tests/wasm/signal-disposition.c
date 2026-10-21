@@ -28,7 +28,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include "wasi-test-pump.h"
+#include "wasi-test.h"
 
 static int app_hits;
 

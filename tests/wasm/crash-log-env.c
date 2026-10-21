@@ -46,17 +46,18 @@ int
 main(void)
 {
 	if (setenv("LIBDISPATCH_LOG", CRASH_LOG_ENV, 1) != 0) {
-		printf("FAIL: setenv\n");
+		puts("FAIL: setenv");
 		return 1;
 	}
-	dispatch_queue_t q = dispatch_queue_create("crash.log.env", NULL);
+	dispatch_queue_t queue = dispatch_queue_create("wasi.crash_log_env",
+			DISPATCH_QUEUE_SERIAL);
 	printf("crash log env %s armed\n", CRASH_LOG_ENV);
 	fflush(stdout);
 #if CRASH_LOG_ASSERT
-	dispatch_assert_queue(q);
+	dispatch_assert_queue(queue);
 #else
-	dispatch_resume(q);
+	dispatch_resume(queue);
 #endif
-	printf("FAIL: no crash\n");
+	puts("FAIL: no crash");
 	return 1;
 }

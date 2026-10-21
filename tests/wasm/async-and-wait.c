@@ -19,94 +19,92 @@
  */
 
 /*
- * Work submitted from a dispatch_async_and_wait body must not run on the
- * stack of that body. It runs at the next pump point, after the wait
- * releases the queue. The body itself runs inline on the calling thread,
- * with the queue width or barrier held, when the queue hierarchy allows.
- * The test covers both entry paths:
+ * dispatch_async_and_wait runs its workitem inline on the calling thread
+ * (with the queue's width/barrier acquired) whenever the queue hierarchy
+ * allows. Work submitted from inside the body must not run on that stack:
+ * it runs at the next pump point, after the wait has released the queue.
+ * Both entry shapes are covered:
  *
- *  - A plain block goes through _dispatch_async_and_wait_f.
- *  - A dispatch_block_create() block (private data) goes through
- *    _dispatch_async_and_wait_block_with_privdata. Its recurse step runs
- *    inside the _dispatch_fake_wlh ANON region. A block that ran there would
- *    crash with the internal error "Lingering DISPATCH_WLH_ANON". Swift
- *    takes this path through DispatchQueue.asyncAndWait(execute:).
+ *  - a plain block funnels through _dispatch_async_and_wait_f
+ *  - a dispatch_block_create() (private-data) block takes a separate funnel,
+ *    _dispatch_async_and_wait_block_with_privdata, whose recurse runs inside
+ *    the _dispatch_fake_wlh ANON region; a block that ran there would die
+ *    with the internal-bug crash "Lingering DISPATCH_WLH_ANON". Swift
+ *    reaches this path via DispatchQueue.asyncAndWait(execute:).
  *
- * After each return, a contended dispatch_sync on qb pumps the queued block.
+ * After each return a contended dispatch_sync on the other queue pumps the
+ * queued block.
  */
 #include <dispatch/dispatch.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <dispatch/private.h>
+#include <Block.h>
 
-// declared in private/workloop_private.h in this tree
-extern void dispatch_async_and_wait(dispatch_queue_t queue,
-		dispatch_block_t block);
-extern void dispatch_barrier_async_and_wait(dispatch_queue_t queue,
-		dispatch_block_t block);
+#include <bsdtests.h>
+#include "dispatch_test.h"
 
 int
 main(void)
 {
-	dispatch_queue_t qa = dispatch_queue_create("v2.aaw.outer", NULL);
-	dispatch_queue_t qb = dispatch_queue_create("v2.aaw.other", NULL);
-	__block int plain_done = 0;
-	__block int benign_done = 0;
-	__block int nested_done = 0;
-	__block int barrier_done = 0;
+	dispatch_test_start("Dispatch WASI Async And Wait");
 
-	// control: the plain-block path. The nested sync-back runs at the pump,
-	// after the inline call released qa.
-	dispatch_async_and_wait(qa, ^{
-		dispatch_async(qb, ^{
-			dispatch_sync(qa, ^{ plain_done = 1; });
+	dispatch_queue_t outer = dispatch_queue_create("wasi.aaw.outer",
+			DISPATCH_QUEUE_SERIAL);
+	dispatch_queue_t other = dispatch_queue_create("wasi.aaw.other",
+			DISPATCH_QUEUE_SERIAL);
+	__block long plain_ran = 0;
+	__block long benign_ran = 0;
+	__block long nested_ran = 0;
+	__block long barrier_ran = 0;
+
+	// control: the plain-block funnel; the nested sync-back runs at the
+	// pump, after the inline invoke released the outer queue
+	dispatch_async_and_wait(outer, ^{
+		dispatch_async(other, ^{
+			dispatch_sync(outer, ^{ plain_ran = 1; });
 		});
 	});
-	if (plain_done) {
-		printf("FAIL: plain-block nested async ran inside async_and_wait\n");
-		exit(1);
-	}
-	dispatch_sync(qb, ^{ });
-	if (!plain_done) {
-		printf("FAIL: plain-block nested sync-back never ran\n");
-		exit(1);
-	}
+	test_long("plain-block nested async does not run inside "
+			"dispatch_async_and_wait", plain_ran, 0);
+	dispatch_sync(other, ^{ });
+	test_long("contended dispatch_sync runs the plain-block nested "
+			"sync-back", plain_ran, 1);
 
-	// privdata, simple body: a single dispatch_async inside the block must
-	// not run inside the fake ANON wlh region
+	// privdata, benign body: a lone dispatch_async inside the block must
+	// not run inside the fake-ANON wlh region
 	dispatch_block_t benign = dispatch_block_create(0, ^{
-		dispatch_async(qb, ^{ benign_done = 1; });
+		dispatch_async(other, ^{ benign_ran = 1; });
 	});
-	dispatch_async_and_wait(qa, benign);
-	dispatch_sync(qb, ^{ });
-	if (!benign_done) {
-		printf("FAIL: privdata benign async never ran\n");
-		exit(1);
-	}
+	dispatch_async_and_wait(outer, benign);
+	dispatch_sync(other, ^{ });
+	test_long("contended dispatch_sync runs the nested async of a "
+			"dispatch_block_create block", benign_ran, 1);
 
 	// privdata, full nesting: same shape as the plain-block control
 	dispatch_block_t nested = dispatch_block_create(0, ^{
-		dispatch_async(qb, ^{
-			dispatch_sync(qa, ^{ nested_done = 1; });
+		dispatch_async(other, ^{
+			dispatch_sync(outer, ^{ nested_ran = 1; });
 		});
 	});
-	dispatch_async_and_wait(qa, nested);
-	dispatch_sync(qb, ^{ });
-	if (!nested_done) {
-		printf("FAIL: privdata nested sync-back never ran\n");
-		exit(1);
-	}
+	dispatch_async_and_wait(outer, nested);
+	dispatch_sync(other, ^{ });
+	test_long("contended dispatch_sync runs the nested sync-back of a "
+			"dispatch_block_create block", nested_ran, 1);
 
-	// privdata through the barrier entry point (the same path)
+	// privdata through the barrier entry point (same funnel)
 	dispatch_block_t barrier = dispatch_block_create(0, ^{
-		dispatch_async(qb, ^{ barrier_done = 1; });
+		dispatch_async(other, ^{ barrier_ran = 1; });
 	});
-	dispatch_barrier_async_and_wait(qa, barrier);
-	dispatch_sync(qb, ^{ });
-	if (!barrier_done) {
-		printf("FAIL: privdata barrier async never ran\n");
-		exit(1);
-	}
+	dispatch_barrier_async_and_wait(outer, barrier);
+	dispatch_sync(other, ^{ });
+	test_long("contended dispatch_sync runs the nested async of a "
+			"dispatch_block_create block passed to "
+			"dispatch_barrier_async_and_wait", barrier_ran, 1);
 
-	printf("async and wait OK\n");
+	Block_release(benign);
+	Block_release(nested);
+	Block_release(barrier);
+	dispatch_release(outer);
+	dispatch_release(other);
+	test_stop();
 	return 0;
 }

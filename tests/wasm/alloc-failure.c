@@ -18,16 +18,17 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
+/*
+ * An allocation failure in libdispatch must crash with a named diagnostic on
+ * single-threaded WASI. It must not hang. Threaded platforms sleep and retry,
+ * because another thread can free memory meanwhile. WASI has no other
+ * thread, and the module memory is at its maximum. So a retry never succeeds.
+ *
+ * The test fills the heap, then asks libdispatch to allocate.
+ */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
 #include <stdlib.h>
-
-// An allocation failure in libdispatch must crash with a named diagnostic on
-// single-threaded WASI. It must not hang. Threaded platforms sleep and retry,
-// because another thread can free memory meanwhile. WASI has no other
-// thread, and the module memory is at its maximum. So a retry never succeeds.
-//
-// The test fills the heap, then asks libdispatch to allocate.
 
 // The module memory limit. It must match -Wl,--max-memory in CMakeLists.txt.
 #define MAX_MEMORY_BYTES (16u << 20)
@@ -41,33 +42,36 @@ _Static_assert(MIN_BLOCK_SIZE >= sizeof(void *),
 // The head of the linked list of all blocks. The test never frees the
 // blocks, so the heap stays full. The volatile store stops the compiler from
 // removing the malloc calls.
-static void *volatile hoard;
+static void *volatile blocks;
 
 static void
-work(void *ctxt)
+work(void *context)
 {
-	(void)ctxt;
+	(void)context;
 }
 
 static void
 exhaust_heap(void)
 {
 	// Block sizes, largest first: 1 MiB, 64 KiB, 4 KiB, 256 B, 64 B, 16 B,
-	// and 8 B. Large blocks fill most of the heap fast. Small blocks then fill
-	// the gaps that remain.
+	// and 8 B. Large blocks fill most of the heap fast. Small blocks then
+	// fill the gaps that remain.
 	static const size_t block_sizes[] = {
 		1u << 20, 1u << 16, 1u << 12, 1u << 8, 64, 16, MIN_BLOCK_SIZE,
 	};
-	for (size_t i = 0; i < sizeof(block_sizes) / sizeof(block_sizes[0]); i++) {
+	size_t count = sizeof(block_sizes) / sizeof(block_sizes[0]);
+	for (size_t i = 0; i < count; i++) {
 		size_t size = block_sizes[i];
-		// The loop ends when malloc returns NULL. The memory limit makes
-		// that happen before the count limit. The count limit is a backstop.
+		// The loop ends when malloc returns NULL. The memory limit
+		// makes that happen before the count limit. The count limit
+		// is a backstop.
 		for (size_t n = 0; n < MAX_MEMORY_BYTES / size; n++) {
 			void **block = malloc(size);
 			if (block == NULL) break;
-			// size >= MIN_BLOCK_SIZE, so this write stays inside the block
-			*block = hoard;
-			hoard = block;
+			// size >= MIN_BLOCK_SIZE, so this write stays inside
+			// the block
+			*block = blocks;
+			blocks = block;
 		}
 	}
 }
@@ -75,21 +79,22 @@ exhaust_heap(void)
 int
 main(void)
 {
-	// unbuffered stdout writes each marker before the crash
-	setvbuf(stdout, NULL, _IONBF, 0);
-	dispatch_queue_t queue = dispatch_queue_create("wasi.alloc.failure", NULL);
+	dispatch_queue_t queue = dispatch_queue_create("wasi.alloc_failure",
+			DISPATCH_QUEUE_SERIAL);
 	exhaust_heap();
 	puts("heap exhausted");
+	fflush(stdout);
 #if ALLOC_FAILURE_ASYNC
 	// continuation allocator (_dispatch_malloc_continuation_alloc)
 	dispatch_async_f(queue, NULL, work);
 #else
 	// object allocator (_os_object_alloc_realized)
 	(void)queue;
-	(void)dispatch_queue_create("wasi.alloc.failure.second", NULL);
+	(void)dispatch_queue_create("wasi.alloc_failure.second",
+			DISPATCH_QUEUE_SERIAL);
 	(void)work;
 #endif
 	// the allocation above must crash, so this line never runs
-	puts("UNEXPECTED: allocation returned");
-	return 0;
+	puts("FAIL: allocation returned");
+	return 1;
 }

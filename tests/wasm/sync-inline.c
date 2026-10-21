@@ -23,26 +23,40 @@
  * without requiring dispatch_main() or any cooperative drain.
  */
 #include <dispatch/dispatch.h>
-#include <stdio.h>
 
-static void inc(void *c) { (*(int *)c)++; }
+#include <bsdtests.h>
+#include "dispatch_test.h"
 
-int main(void)
+static void
+inc(void *context)
 {
-	int n = 0;
-	dispatch_sync_f(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
-			&n, inc);
-	dispatch_queue_t s = dispatch_queue_create("v2.sync.serial",
+	(*(long *)context)++;
+}
+
+int
+main(void)
+{
+	dispatch_test_start("Dispatch WASI Sync Inline");
+
+	long count = 0;
+	dispatch_queue_t global = dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+	dispatch_sync_f(global, &count, inc);
+	test_long("dispatch_sync_f on a global queue runs inline", count, 1);
+
+	dispatch_queue_t serial = dispatch_queue_create("wasi.sync.serial",
 			DISPATCH_QUEUE_SERIAL);
-	dispatch_sync_f(s, &n, inc);
-	dispatch_queue_t c = dispatch_queue_create("v2.sync.conc",
-			DISPATCH_QUEUE_CONCURRENT);
-	__block int barrier_ran = 0;
-	dispatch_barrier_sync(c, ^{ barrier_ran = 1; });
-	if (n != 2 || !barrier_ran) {
-		printf("FAIL: n=%d barrier_ran=%d\n", n, barrier_ran);
-		return 1;
-	}
-	printf("sync inline OK\n");
+	dispatch_sync_f(serial, &count, inc);
+	test_long("dispatch_sync_f on a serial queue runs inline", count, 2);
+
+	dispatch_queue_t concurrent = dispatch_queue_create(
+			"wasi.sync.concurrent", DISPATCH_QUEUE_CONCURRENT);
+	__block long barrier_ran = 0;
+	dispatch_barrier_sync(concurrent, ^{ barrier_ran = 1; });
+	test_long("dispatch_barrier_sync runs inline", barrier_ran, 1);
+
+	dispatch_release(serial);
+	dispatch_release(concurrent);
+	test_stop();
 	return 0;
 }

@@ -28,38 +28,44 @@
  *  2. A 10 ms dispatch_after sets the flag.
  */
 #include <dispatch/dispatch.h>
-#include <stdio.h>
-#include <stdlib.h>
+
+#include <bsdtests.h>
+#include "dispatch_test.h"
 
 // The test fails after this many ticks. A fair drain sets the flag after a
 // few ticks. The limit only stops a starved run in a few seconds.
 #define TICK_LIMIT 2000000
 
 static dispatch_queue_t lane;
-static volatile int done;
+static long done;
 static long ticks;
 static int phase;
 
 static void start_phase2(void);
 
+// reposts itself until the flag is set, at most TICK_LIMIT times
 static void
-tick(void *ctxt)
+tick(void *context)
 {
-	(void)ctxt;
-	if (done) {
-		if (phase == 1) {
+	(void)context;
+	if (!done && ++ticks < TICK_LIMIT) {
+		dispatch_async_f(lane, NULL, tick);
+		return;
+	}
+	if (phase == 1) {
+		test_long("global-queue block runs within 2000000 lane ticks",
+				done, 1);
+		if (done) {
 			start_phase2();
 			return;
 		}
-		printf("main lane fairness OK\n");
-		exit(0);
+	} else {
+		test_long("10 ms dispatch_after block runs within 2000000 lane "
+				"ticks", done, 1);
 	}
-	if (++ticks == TICK_LIMIT) {
-		printf("FAIL: phase %d flag never set after %ld lane ticks\n",
-				phase, ticks);
-		exit(1);
-	}
-	dispatch_async_f(lane, NULL, tick);
+	// the system keeps the lane alive until this item returns
+	dispatch_release(lane);
+	test_stop();
 }
 
 static void
@@ -68,20 +74,23 @@ start_phase2(void)
 	phase = 2;
 	done = 0;
 	ticks = 0;
+	dispatch_queue_t global = dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_MSEC),
-			dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
-			^{ done = 1; });
+			global, ^{ done = 1; });
 	dispatch_async_f(lane, NULL, tick);
 }
 
 int
 main(void)
 {
-	lane = dispatch_queue_create_with_target("wasi.main.lane", NULL,
-			dispatch_get_main_queue());
+	dispatch_test_start("Dispatch WASI Main Lane Fairness");
+
+	lane = dispatch_queue_create_with_target("wasi.main.lane",
+			DISPATCH_QUEUE_SERIAL, dispatch_get_main_queue());
 	phase = 1;
 	dispatch_async_f(lane, NULL, tick);
-	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT,
-			0), ^{ done = 1; });
+	dispatch_async(dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{ done = 1; });
 	dispatch_main();
 }

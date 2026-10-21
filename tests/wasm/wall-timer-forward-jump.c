@@ -42,17 +42,19 @@ keep_busy(void *context)
 int
 main(void)
 {
-	dispatch_queue_t main_q = dispatch_get_main_queue();
-	dispatch_after(dispatch_walltime(NULL, 30 * NSEC_PER_SEC), main_q, ^{
+	dispatch_queue_t main_queue = dispatch_get_main_queue();
+	dispatch_after(dispatch_walltime(NULL, 30 * NSEC_PER_SEC),
+			main_queue, ^{
 		puts("wall timer followed the forward clock change");
 		exit(0);
 	});
 	// fail if the walltime timer has not fired after 3 s of uptime
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC),
-			main_q, ^{
-		puts("FAIL: wall timer did not follow the forward clock change");
+			main_queue, ^{
+		puts("FAIL: wall timer did not follow the forward clock "
+				"change");
 		exit(1);
 	});
-	dispatch_async_f(main_q, NULL, keep_busy);
+	dispatch_async_f(main_queue, NULL, keep_busy);
 	dispatch_main();
 }

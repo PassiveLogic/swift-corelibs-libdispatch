@@ -25,14 +25,13 @@
  *  - a wait with an expired deadline does not run main-queue blocks either
  *  - root-queue work still runs during the wait, one item per step
  *  - dispatch_main() then runs the whole main-queue backlog in order
- *
- * Each check exits with its own status, so the status names the failed check.
  */
 #include <dispatch/dispatch.h>
-#include <stdio.h>
-#include <stdlib.h>
 #include <stdint.h>
-#include <time.h>
+
+#include <bsdtests.h>
+#include "dispatch_test.h"
+#include "wasi-test.h"
 
 // the number of main-queue items in the backlog
 #define MAIN_ITEMS 20
@@ -40,94 +39,103 @@
 #define ITEM_MS 5
 // the timeout of each timed wait
 #define BUDGET_MS 20
-// The latest return of a timed wait. The 30 ms margin allows for one root
-// item (ITEM_MS) and scheduling noise. It is far below the backlog time.
+// The latest return of a timed wait. The 30 ms margin allows for scheduling
+// noise. It is far below the backlog time.
 #define LATE_LIMIT_MS (BUDGET_MS + 30)
-
-static uint64_t
-mono_ms(void)
-{
-	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return ((uint64_t)ts.tv_sec * NSEC_PER_SEC + (uint64_t)ts.tv_nsec) /
-			NSEC_PER_MSEC;
-}
 
 static void
 spin_ms(uint64_t ms)
 {
-	uint64_t end = mono_ms() + ms;
-	while (mono_ms() < end) {
+	uint64_t end = wasi_test_now_ns() + ms * NSEC_PER_MSEC;
+	while (wasi_test_now_ns() < end) {
 	}
 }
 
-static int main_ran;
-static int root_ran;
-static int waits_done;
+static long main_ran;
+static long root_ran;
+// main items that ran out of order
+static long main_ran_out_of_order;
 
+// the 20th main item ends the test
 static void
-check_wait(const char *what, intptr_t r, uint64_t elapsed, uint64_t limit)
+check_backlog(void)
 {
-	if (r == 0 || elapsed > limit || main_ran != 0) {
-		printf("FAIL: %s r=%ld elapsed=%llums limit=%llums main_ran=%d\n",
-				what, (long)r, (unsigned long long)elapsed,
-				(unsigned long long)limit, main_ran);
-		exit(1);
-	}
+	test_long("dispatch_main() runs all 20 main-queue items", main_ran,
+			MAIN_ITEMS);
+	test_long("main-queue items run in order", main_ran_out_of_order, 0);
+	test_stop();
 }
 
-int main(void)
+int
+main(void)
 {
-	dispatch_queue_t mq = dispatch_get_main_queue();
-	dispatch_queue_t gq = dispatch_get_global_queue(
+	dispatch_test_start("Dispatch WASI Timed Wait Main Backlog");
+
+	dispatch_queue_t main_queue = dispatch_get_main_queue();
+	dispatch_queue_t global = dispatch_get_global_queue(
 			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
 
 	for (int i = 0; i < MAIN_ITEMS; i++) {
-		dispatch_async(mq, ^{
-			if (!waits_done) {
-				printf("FAIL: main item %d ran inside a top-level wait\n", i);
-				exit(4);
-			}
+		dispatch_async(main_queue, ^{
 			if (main_ran != i) {
-				printf("FAIL: main item %d ran at %d\n", i, main_ran);
-				exit(2);
+				main_ran_out_of_order++;
 			}
 			spin_ms(ITEM_MS);
 			if (++main_ran == MAIN_ITEMS) {
-				printf("timed wait main backlog OK (root_ran=%d)\n",
-						root_ran);
-				exit(0);
+				check_backlog();
 			}
 		});
 	}
-	dispatch_async(gq, ^{ root_ran++; });
+	dispatch_async(global, ^{ root_ran++; });
 
-	dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-	uint64_t t0 = mono_ms();
-	intptr_t r = dispatch_semaphore_wait(sem,
-			dispatch_time(DISPATCH_TIME_NOW, BUDGET_MS * NSEC_PER_MSEC));
-	check_wait("sema timedwait", r, mono_ms() - t0, LATE_LIMIT_MS);
-	if (root_ran != 1) {
-		printf("FAIL: root item did not run in the wait (root_ran=%d)\n",
-				root_ran);
-		exit(3);
-	}
+	dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+	uint64_t start = wasi_test_now_ns();
+	long result = dispatch_semaphore_wait(semaphore, dispatch_time(
+			DISPATCH_TIME_NOW, BUDGET_MS * NSEC_PER_MSEC));
+	long elapsed_ms = (long)((wasi_test_now_ns() - start) / NSEC_PER_MSEC);
+	test_long("timed semaphore wait with a main backlog times out",
+			!result, 0);
+	test_long_less_than_or_equal("timed semaphore wait returns within "
+			"50 ms despite the 100 ms main backlog", elapsed_ms,
+			LATE_LIMIT_MS);
+	test_long("timed semaphore wait runs no main-queue item", main_ran, 0);
+	test_long("root-queue item runs during the timed semaphore wait",
+			root_ran, 1);
 
-	dispatch_group_t g = dispatch_group_create();
-	dispatch_group_enter(g);
-	t0 = mono_ms();
-	r = dispatch_group_wait(g,
-			dispatch_time(DISPATCH_TIME_NOW, BUDGET_MS * NSEC_PER_MSEC));
-	check_wait("group timedwait", r, mono_ms() - t0, LATE_LIMIT_MS);
+	dispatch_group_t group = dispatch_group_create();
+	dispatch_group_enter(group);
+	start = wasi_test_now_ns();
+	result = dispatch_group_wait(group, dispatch_time(DISPATCH_TIME_NOW,
+			BUDGET_MS * NSEC_PER_MSEC));
+	elapsed_ms = (long)((wasi_test_now_ns() - start) / NSEC_PER_MSEC);
+	test_long("timed group wait with a main backlog times out", !result,
+			0);
+	test_long_less_than_or_equal("timed group wait returns within 50 ms "
+			"despite the 100 ms main backlog", elapsed_ms,
+			LATE_LIMIT_MS);
+	test_long("timed group wait runs no main-queue item", main_ran, 0);
 
-	t0 = mono_ms();
-	r = dispatch_semaphore_wait(sem, DISPATCH_TIME_NOW);
-	check_wait("sema expired wait", r, mono_ms() - t0, ITEM_MS);
-	t0 = mono_ms();
-	r = dispatch_group_wait(g, DISPATCH_TIME_NOW);
-	check_wait("group expired wait", r, mono_ms() - t0, ITEM_MS);
-	dispatch_group_leave(g);
+	start = wasi_test_now_ns();
+	result = dispatch_semaphore_wait(semaphore, DISPATCH_TIME_NOW);
+	elapsed_ms = (long)((wasi_test_now_ns() - start) / NSEC_PER_MSEC);
+	test_long("expired semaphore wait with a main backlog times out",
+			!result, 0);
+	test_long_less_than_or_equal("expired semaphore wait returns within "
+			"5 ms", elapsed_ms, ITEM_MS);
+	test_long("expired semaphore wait runs no main-queue item", main_ran,
+			0);
 
-	waits_done = 1;
+	start = wasi_test_now_ns();
+	result = dispatch_group_wait(group, DISPATCH_TIME_NOW);
+	elapsed_ms = (long)((wasi_test_now_ns() - start) / NSEC_PER_MSEC);
+	test_long("expired group wait with a main backlog times out", !result,
+			0);
+	test_long_less_than_or_equal("expired group wait returns within 5 ms",
+			elapsed_ms, ITEM_MS);
+	test_long("expired group wait runs no main-queue item", main_ran, 0);
+	dispatch_group_leave(group);
+
+	dispatch_release(group);
+	dispatch_release(semaphore);
 	dispatch_main();
 }

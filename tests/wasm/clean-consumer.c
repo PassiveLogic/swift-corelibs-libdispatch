@@ -18,17 +18,27 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
+/*
+ * A program that uses Dispatch without ever pumping (no dispatch_main(), no
+ * blocking wait) exits 0: an uncontended dispatch_sync runs inline, and
+ * releasing the queue submits nothing that a pump must run.
+ */
 #include <dispatch/dispatch.h>
-#include <stdio.h>
+
+#include <bsdtests.h>
+#include "dispatch_test.h"
 
 int
 main(void)
 {
-	__block int value = 0;
-	dispatch_queue_t queue = dispatch_queue_create("wasi.consumer", NULL);
+	dispatch_test_start("Dispatch WASI Clean Consumer");
+
+	__block long value = 0;
+	dispatch_queue_t queue = dispatch_queue_create("wasi.consumer",
+			DISPATCH_QUEUE_SERIAL);
 	dispatch_sync(queue, ^{ value = 1; });
 	dispatch_release(queue);
-	if (value != 1) return 1;
-	puts("consumer OK");
+	test_long("uncontended dispatch_sync runs the block inline", value, 1);
+	test_stop();
 	return 0;
 }

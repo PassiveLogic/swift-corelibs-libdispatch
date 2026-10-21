@@ -19,24 +19,21 @@
  */
 
 /*
- * Shared pump for focused tests. A top-level blocking wait drains pending
- * Dispatch work. The signal block is queued on the default root queue after
- * everything the test submitted there, so the wait returns once that earlier
- * work ran.
+ * After the only main-queue timer fires and drains, dispatch_main() has no
+ * work, no timers, and no sources left on the sole WASI thread. It must
+ * crash idle with a named diagnostic instead of parking forever. The timer
+ * block prints a marker so the test proves it ran before the crash.
  */
-#ifndef WASI_TEST_PUMP_H
-#define WASI_TEST_PUMP_H
-
 #include <dispatch/dispatch.h>
+#include <stdio.h>
 
-static inline void
-wasi_test_pump(void)
+int
+main(void)
 {
-	dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT,
-			0), ^{ dispatch_semaphore_signal(sem); });
-	dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
-	dispatch_release(sem);
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC),
+			dispatch_get_main_queue(), ^{
+		puts("main queue timer ran");
+		fflush(stdout);
+	});
+	dispatch_main();
 }
-
-#endif /* WASI_TEST_PUMP_H */

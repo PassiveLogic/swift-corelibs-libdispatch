@@ -999,25 +999,20 @@ _dispatch_ktrace_impl(uint32_t code, uint64_t a, uint64_t b,
 		_dispatch_set_crash_log_message_dynamic((msg))
 #define _dispatch_set_crash_log_message_dynamic(msg) _RPTF0(_CRT_ASSERT, (msg))
 #elif defined(__wasi__)
-// A wasm trap has no crash-log payload. Write the reason to stderr before
-// the trap, so that a crash under a WASI runtime shows its cause. This
-// bypasses _dispatch_log(), so LIBDISPATCH_LOG cannot hide or redirect it.
+// A wasm trap carries no crash-log payload, so write the reason to stderr.
+// This bypasses _dispatch_log(), so LIBDISPATCH_LOG cannot hide it.
 #define _dispatch_set_crash_log_cause_and_message(ac, msg) \
 		((void)fprintf(stderr, "%s (cause: 0x%llx)\n", (msg), \
 				(unsigned long long)(ac)))
 #define _dispatch_set_crash_log_message(msg) \
 		((void)fprintf(stderr, "%s\n", (msg)))
-// _dispatch_assert_crash() logs the message first. This repeats it on
-// stderr only when LIBDISPATCH_LOG kept that log line off stderr.
-DISPATCH_NOINLINE DISPATCH_COLD
-void _dispatch_wasi_crash_log_dynamic(const char *msg);
 #define _dispatch_set_crash_log_message_dynamic(msg) \
-		_dispatch_wasi_crash_log_dynamic((msg))
+		_dispatch_set_crash_log_message(msg)
 #else
 #define _dispatch_set_crash_log_cause_and_message(ac, msg) ((void)(ac))
 #define _dispatch_set_crash_log_message(msg)
 #define _dispatch_set_crash_log_message_dynamic(msg)
-#endif // _WIN32 / __wasi__
+#endif // _WIN32
 
 #if HAVE_MACH
 // MIG_REPLY_MISMATCH means either:

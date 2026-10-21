@@ -18,26 +18,29 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
-// dispatch_source_cancel_and_wait returns in two cases on single-threaded
-// WASI:
-//  - At top level, a timer source cancels. The wait pumps the manager queue
-//    until the manager unregisters the source.
-//  - Inside a work item, a source that cancels inline needs no wait. A
-//    DATA_ADD source on an idle queue is such a source.
-// wait-diagnostics.c covers a timer source inside a work item. That case
-// crashes with a named diagnostic.
-
+/*
+ * dispatch_source_cancel_and_wait returns in two cases on single-threaded
+ * WASI:
+ *  - At top level, a timer source cancels. The wait pumps the manager queue
+ *    until the manager unregisters the source.
+ *  - Inside a work item, a source that cancels inline needs no wait. A
+ *    DATA_ADD source on an idle queue is such a source.
+ * wait-diagnostics.c covers a timer source inside a work item. That case
+ * crashes with a named diagnostic.
+ */
 #include <dispatch/dispatch.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <dispatch/private.h>
 
-// declared in private/source_private.h in this tree
-extern void dispatch_source_cancel_and_wait(dispatch_source_t source);
+#include <bsdtests.h>
+#include "dispatch_test.h"
 
 int
 main(void)
 {
-	dispatch_queue_t queue = dispatch_queue_create("wasi.cancel.wait", NULL);
+	dispatch_test_start("Dispatch WASI Cancel And Wait");
+
+	dispatch_queue_t queue = dispatch_queue_create("wasi.cancel.wait",
+			DISPATCH_QUEUE_SERIAL);
 	dispatch_source_t timer = dispatch_source_create(
 			DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
 	// 60 s: the timer must not fire during the test
@@ -46,23 +49,23 @@ main(void)
 	dispatch_source_set_event_handler(timer, ^{});
 	dispatch_activate(timer);
 	dispatch_source_cancel_and_wait(timer);
-	if (!dispatch_source_testcancel(timer)) {
-		puts("FAIL: timer not canceled");
-		return 1;
-	}
+	test_long("top-level dispatch_source_cancel_and_wait cancels the timer "
+			"source", !dispatch_source_testcancel(timer), 0);
+	dispatch_release(timer);
 
 	dispatch_source_t data = dispatch_source_create(
 			DISPATCH_SOURCE_TYPE_DATA_ADD, 0, 0, queue);
 	dispatch_source_set_event_handler(data, ^{});
 	dispatch_activate(data);
-	dispatch_async(dispatch_get_global_queue(0, 0), ^{
+	dispatch_async(dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
 		dispatch_source_cancel_and_wait(data);
-		if (!dispatch_source_testcancel(data)) {
-			puts("FAIL: data source not canceled");
-			exit(1);
-		}
-		puts("cancel and wait OK");
-		exit(0);
+		test_long("dispatch_source_cancel_and_wait inside a work item "
+				"cancels the data source",
+				!dispatch_source_testcancel(data), 0);
+		dispatch_release(data);
+		dispatch_release(queue);
+		test_stop();
 	});
 	dispatch_main();
 }

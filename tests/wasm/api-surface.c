@@ -19,196 +19,244 @@
  */
 
 /*
- * A smoke test of the Dispatch API surface on single-threaded WASI. One
- * binary runs the object, queue attribute, block, data, group, and source
- * APIs end to end.
+ * Broad Dispatch API surface smoke for single-threaded WASI: exercises the
+ * object, queue-attribute, block, data, group, and source families end to
+ * end in one binary. The synchronous calls are checked in main; the
+ * deferred work runs under dispatch_main() as a chain (group notify, then a
+ * user-data source, then a timer, then a walltime dispatch_after), and the
+ * last link checks the deferred results and stops the test.
  */
 #include <dispatch/dispatch.h>
-#include <stdio.h>
-#include <stdlib.h>
+#include <Block.h>
 #include <string.h>
 
-#define CHECK(cond, name) do { \
-		if (!(cond)) { printf("FAIL: %s\n", name); exit(1); } \
-	} while (0)
+#include <bsdtests.h>
+#include "dispatch_test.h"
 
-// The callbacks write these globals, so they are not const.
-static dispatch_once_t once_tok;
-static int once_n = 0;
-static void once_fn(void *ctx) { (void)ctx; once_n++; }
+static dispatch_once_t once_predicate;
+static long once_count;
+static int specific_key;
+static int specific_value = 42;
 
-static int g_finalized = 0;
-static void finalizer(void *ctx) { (void)ctx; g_finalized++; }
+// results of the deferred work, checked by the last link of the chain
+static long finalizer_count;
+static long inactive_ran;
+static long resumed_ran;
+static long source_registered;
+static long source_events;
+static long source_cancelled;
 
-// The queue-specific key and value. The test compares only their addresses.
-// dispatch_queue_set_specific takes a non-const context, so sval is not const.
-static int skey;
-static int sval;
-
-// dispatch_apply runs the block this many times
-#define APPLY_COUNT 5
-
-// The data tests split MSG into "hello" and " dispatch", then take the word
-// "dispatch" back out of the joined data.
-static const char MSG[] = "hello dispatch";
-#define MSG_LEN (sizeof(MSG) - 1)
-#define MSG_SPLIT 5
-#define WORD_OFFSET 6
-#define WORD_LEN 8
-
-// The data source merges this value. Any nonzero value works.
-#define SOURCE_DATA 7
-
-// The one-shot timer fires after TIMER_DELAY. The final checks run
-// CHECK_DELAY after the timer, by the wall clock.
-#define TIMER_DELAY (20 * NSEC_PER_MSEC)
-#define CHECK_DELAY (30 * NSEC_PER_MSEC)
-
-int main(void)
+static void
+count_once(void *context)
 {
-	dispatch_once_f(&once_tok, NULL, once_fn);
-	dispatch_once_f(&once_tok, NULL, once_fn);
-	CHECK(once_n == 1, "dispatch_once");
-	CHECK(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_MSEC) != 0, "dispatch_time");
-	CHECK(dispatch_walltime(NULL, 0) != 0, "dispatch_walltime");
+	(void)context;
+	once_count++;
+}
 
-	dispatch_queue_t serial = dispatch_queue_create("v2.api.serial",
+static void
+finalizer(void *context)
+{
+	(void)context;
+	finalizer_count++;
+}
+
+static void
+test_deferred_results(void)
+{
+	test_long("initially inactive queue runs its item after activation",
+			inactive_ran, 1);
+	test_long("suspended queue runs its item after resume",
+			resumed_ran, 1);
+	test_long("finalizer runs once after the queue release",
+			finalizer_count, 1);
+	test_long("source registration handler runs", source_registered, 1);
+	test_long("user-data source delivers one event", source_events, 1);
+	test_long("source cancel handler runs", source_cancelled, 1);
+}
+
+int
+main(void)
+{
+	dispatch_test_start("Dispatch WASI API Surface");
+
+	dispatch_once_f(&once_predicate, NULL, count_once);
+	dispatch_once_f(&once_predicate, NULL, count_once);
+	test_long("dispatch_once_f runs its function once", once_count, 1);
+	test_long("dispatch_time returns a non-zero time",
+			!dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_MSEC), 0);
+	test_long("dispatch_walltime returns a non-zero time",
+			!dispatch_walltime(NULL, 0), 0);
+
+	dispatch_queue_t serial = dispatch_queue_create("wasi.api.serial",
 			DISPATCH_QUEUE_SERIAL);
-	dispatch_queue_t conc = dispatch_queue_create("v2.api.conc",
+	dispatch_queue_t concurrent = dispatch_queue_create("wasi.api.conc",
 			DISPATCH_QUEUE_CONCURRENT);
-	CHECK(!strcmp(dispatch_queue_get_label(serial), "v2.api.serial"),
-			"dispatch_queue_get_label");
+	test_long("dispatch_queue_get_label returns the queue label",
+			strcmp(dispatch_queue_get_label(serial),
+			"wasi.api.serial"), 0);
 	dispatch_queue_t targeted = dispatch_queue_create_with_target(
-			"v2.api.targeted", DISPATCH_QUEUE_SERIAL, serial);
-	(void)targeted;
-	dispatch_set_target_queue(conc,
-			dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
+			"wasi.api.targeted", DISPATCH_QUEUE_SERIAL, serial);
+	dispatch_set_target_queue(concurrent, dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0));
 
-	dispatch_queue_set_specific(serial, &skey, &sval, NULL);
-	CHECK(dispatch_queue_get_specific(serial, &skey) == &sval,
-			"dispatch_queue_get_specific");
-	__block int gotspec = 0;
+	dispatch_queue_set_specific(serial, &specific_key, &specific_value,
+			NULL);
+	test_ptr("dispatch_queue_get_specific returns the value set",
+			dispatch_queue_get_specific(serial, &specific_key),
+			&specific_value);
+	__block void *specific = NULL;
 	dispatch_sync(serial, ^{
-		if (dispatch_get_specific(&skey) == &sval) gotspec = 1;
+		specific = dispatch_get_specific(&specific_key);
 		dispatch_assert_queue(serial);
-		dispatch_assert_queue_not(conc);
+		dispatch_assert_queue_not(concurrent);
 	});
-	CHECK(gotspec, "dispatch_get_specific");
+	test_ptr("dispatch_get_specific on the queue returns its value",
+			specific, &specific_value);
 
-	__block int barrier_ran = 0;
-	dispatch_barrier_sync(conc, ^{ barrier_ran = 1; });
-	CHECK(barrier_ran, "dispatch_barrier_sync");
+	__block long barrier_ran = 0;
+	dispatch_barrier_sync(concurrent, ^{ barrier_ran = 1; });
+	test_long("dispatch_barrier_sync runs its block", barrier_ran, 1);
 
-	__block int applied = 0;
-	dispatch_apply(APPLY_COUNT, conc, ^(size_t i) { (void)i; applied++; });
-	CHECK(applied == APPLY_COUNT, "dispatch_apply");
+	__block long applied = 0;
+	dispatch_apply(5, concurrent, ^(size_t index) {
+		(void)index;
+		applied++;
+	});
+	test_long("dispatch_apply runs every iteration", applied, 5);
 
-	dispatch_data_t d1 = dispatch_data_create(MSG, MSG_SPLIT, NULL,
+	const char *message = "hello dispatch";
+	dispatch_data_t head = dispatch_data_create(message, 5, NULL,
 			DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-	dispatch_data_t d2 = dispatch_data_create(MSG + MSG_SPLIT,
-			MSG_LEN - MSG_SPLIT, NULL, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-	dispatch_data_t cat = dispatch_data_create_concat(d1, d2);
-	CHECK(dispatch_data_get_size(cat) == MSG_LEN, "dispatch_data_concat");
-	dispatch_data_t sub = dispatch_data_create_subrange(cat, WORD_OFFSET,
-			WORD_LEN);
-	const void *buf; size_t sz;
-	dispatch_data_t map = dispatch_data_create_map(sub, &buf, &sz);
-	(void)map;
-	CHECK(sz == WORD_LEN && !memcmp(buf, "dispatch", WORD_LEN),
-			"dispatch_data_subrange/map");
-	__block size_t total = 0;
-	dispatch_data_apply(cat,
-			^bool(dispatch_data_t r, size_t off, const void *loc, size_t s) {
-		(void)r; (void)off; (void)loc;
-		total += s;
+	dispatch_data_t tail = dispatch_data_create(message + 5,
+			strlen(message) - 5, NULL,
+			DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+	dispatch_data_t joined = dispatch_data_create_concat(head, tail);
+	test_sizet("dispatch_data_create_concat joins both regions",
+			dispatch_data_get_size(joined), strlen(message));
+	dispatch_data_t subrange = dispatch_data_create_subrange(joined, 6, 8);
+	const void *map_bytes;
+	size_t map_size;
+	dispatch_data_t map = dispatch_data_create_map(subrange, &map_bytes,
+			&map_size);
+	test_sizet("mapped subrange has the subrange size", map_size, 8);
+	test_long("mapped subrange holds the subrange bytes",
+			memcmp(map_bytes, "dispatch", 8), 0);
+	__block size_t applied_size = 0;
+	dispatch_data_apply(joined, ^bool(dispatch_data_t region,
+			size_t offset, const void *buffer, size_t size) {
+		(void)region;
+		(void)offset;
+		(void)buffer;
+		applied_size += size;
 		return true;
 	});
-	CHECK(total == MSG_LEN, "dispatch_data_apply");
-	size_t roff;
-	dispatch_data_t reg = dispatch_data_copy_region(cat, WORD_OFFSET, &roff);
-	(void)reg;
+	test_sizet("dispatch_data_apply visits every byte", applied_size,
+			strlen(message));
+	size_t region_offset;
+	dispatch_data_t region = dispatch_data_copy_region(joined, 6,
+			&region_offset);
+	test_sizet("dispatch_data_copy_region returns the tail region offset",
+			region_offset, 5);
+	test_sizet("dispatch_data_copy_region returns the tail region",
+			dispatch_data_get_size(region), strlen(message) - 5);
+	dispatch_release(region);
+	dispatch_release(map);
+	dispatch_release(subrange);
+	dispatch_release(joined);
+	dispatch_release(tail);
+	dispatch_release(head);
 
-	// The created block adds 1 and the performed block adds 10. So the sum
-	// shows which block ran.
-	__block int block_n = 0;
-	dispatch_block_t blk = dispatch_block_create(0, ^{ block_n++; });
-	dispatch_block_perform(0, ^{ block_n += 10; });
-	CHECK(block_n == 10, "dispatch_block_perform");
-	CHECK(dispatch_block_testcancel(blk) == 0, "dispatch_block_testcancel");
-	dispatch_block_cancel(blk);
-	CHECK(dispatch_block_testcancel(blk) != 0, "dispatch_block_cancel");
+	__block long block_count = 0;
+	dispatch_block_t block = dispatch_block_create(0, ^{ block_count++; });
+	dispatch_block_perform(0, ^{ block_count += 10; });
+	test_long("dispatch_block_perform runs its block inline",
+			block_count, 10);
+	test_long("a new block is not cancelled",
+			dispatch_block_testcancel(block), 0);
+	dispatch_block_cancel(block);
+	test_long("dispatch_block_cancel marks the block cancelled",
+			!dispatch_block_testcancel(block), 0);
+	Block_release(block);
 
-	dispatch_semaphore_t sem = dispatch_semaphore_create(1);
-	CHECK(dispatch_semaphore_wait(sem, DISPATCH_TIME_NOW) == 0,
-			"dispatch_semaphore fast path");
-	dispatch_semaphore_signal(sem);
+	dispatch_semaphore_t semaphore = dispatch_semaphore_create(1);
+	long result = dispatch_semaphore_wait(semaphore, DISPATCH_TIME_NOW);
+	test_long("dispatch_semaphore_wait(NOW) takes an available count",
+			result, 0);
+	dispatch_semaphore_signal(semaphore);
+	dispatch_release(semaphore);
 
-	dispatch_queue_t fq = dispatch_queue_create("v2.api.final",
+	dispatch_queue_t finalized = dispatch_queue_create("wasi.api.final",
 			DISPATCH_QUEUE_SERIAL);
-	dispatch_set_context(fq, (void *)"ctx");
-	CHECK(!strcmp((const char *)dispatch_get_context(fq), "ctx"),
-			"dispatch_set/get_context");
-	dispatch_set_finalizer_f(fq, finalizer);
-	dispatch_release(fq);
+	dispatch_set_context(finalized, (void *)"ctx");
+	test_long("dispatch_get_context returns the context set",
+			strcmp(dispatch_get_context(finalized), "ctx"), 0);
+	dispatch_set_finalizer_f(finalized, finalizer);
+	dispatch_release(finalized);
 
-	__block int inactive_ran = 0;
-	dispatch_queue_t inact = dispatch_queue_create("v2.api.inactive",
-			dispatch_queue_attr_make_initially_inactive(DISPATCH_QUEUE_SERIAL));
-	dispatch_async(inact, ^{ inactive_ran = 1; });
-	dispatch_activate(inact);
+	dispatch_queue_t inactive = dispatch_queue_create("wasi.api.inactive",
+			dispatch_queue_attr_make_initially_inactive(
+			DISPATCH_QUEUE_SERIAL));
+	dispatch_async(inactive, ^{ inactive_ran = 1; });
+	dispatch_activate(inactive);
 
-	__block int resumed_ran = 0;
 	dispatch_suspend(serial);
 	dispatch_async(serial, ^{ resumed_ran = 1; });
 	dispatch_resume(serial);
 
-	dispatch_group_t g = dispatch_group_create();
-	__block int gn = 0;
-	dispatch_group_async(g, conc, ^{ gn++; });
-	dispatch_group_enter(g);
-	dispatch_async(conc, ^{ gn++; dispatch_group_leave(g); });
-	__block int source_events = 0;
-	__block int source_cancelled = 0;
-	__block int source_registered = 0;
-	dispatch_group_notify(g, serial, ^{
-		CHECK(gn == 2, "dispatch_group_notify");
-		dispatch_source_t src = dispatch_source_create(
+	dispatch_group_t group = dispatch_group_create();
+	__block long group_count = 0;
+	dispatch_group_async(group, concurrent, ^{ group_count++; });
+	dispatch_group_enter(group);
+	dispatch_async(concurrent, ^{
+		group_count++;
+		dispatch_group_leave(group);
+	});
+	dispatch_group_notify(group, serial, ^{
+		test_long("group notify runs after both group items",
+				group_count, 2);
+		dispatch_source_t source = dispatch_source_create(
 				DISPATCH_SOURCE_TYPE_DATA_ADD, 0, 0, serial);
-		dispatch_source_set_registration_handler(src, ^{
+		dispatch_source_set_registration_handler(source, ^{
 			source_registered = 1;
 		});
-		dispatch_source_set_event_handler(src, ^{
-			CHECK(dispatch_source_get_data(src) == SOURCE_DATA,
-					"dispatch_source_get_data");
+		dispatch_source_set_event_handler(source, ^{
+			test_sizet("user-data source delivers the merged value",
+					dispatch_source_get_data(source), 7);
 			source_events++;
-			dispatch_source_set_cancel_handler(src, ^{
+			dispatch_source_set_cancel_handler(source, ^{
 				source_cancelled = 1;
-				__block dispatch_source_t tim;
-				tim = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,
+				dispatch_source_t timer;
+				timer = dispatch_source_create(
+						DISPATCH_SOURCE_TYPE_TIMER,
 						0, 0, serial);
-				dispatch_source_set_timer(tim,
-						dispatch_time(DISPATCH_TIME_NOW, TIMER_DELAY),
+				dispatch_time_t start;
+				start = dispatch_time(DISPATCH_TIME_NOW,
+						20 * NSEC_PER_MSEC);
+				dispatch_source_set_timer(timer, start,
 						DISPATCH_TIME_FOREVER, 0);
-				dispatch_source_set_event_handler(tim, ^{
-					dispatch_source_cancel(tim);
-					dispatch_after(dispatch_walltime(NULL, CHECK_DELAY),
-							serial, ^{
-						CHECK(inactive_ran, "initially_inactive+activate");
-						CHECK(resumed_ran, "dispatch_suspend/resume");
-						CHECK(g_finalized == 1, "dispatch_set_finalizer_f");
-						CHECK(source_registered, "source registration handler");
-						CHECK(source_events == 1, "user-data source event");
-						CHECK(source_cancelled, "source cancel handler");
-						printf("api surface OK\n");
-						exit(0);
+				dispatch_source_set_event_handler(timer, ^{
+					dispatch_source_cancel(timer);
+					dispatch_time_t deadline;
+					deadline = dispatch_walltime(NULL,
+							30 * NSEC_PER_MSEC);
+					dispatch_after(deadline, serial, ^{
+						test_deferred_results();
+						dispatch_release(timer);
+						dispatch_release(source);
+						dispatch_release(group);
+						dispatch_release(inactive);
+						dispatch_release(targeted);
+						dispatch_release(concurrent);
+						dispatch_release(serial);
+						test_stop();
 					});
 				});
-				dispatch_resume(tim);
+				dispatch_resume(timer);
 			});
-			dispatch_source_cancel(src);
+			dispatch_source_cancel(source);
 		});
-		dispatch_resume(src);
-		dispatch_source_merge_data(src, SOURCE_DATA);
+		dispatch_resume(source);
+		dispatch_source_merge_data(source, 7);
 	});
 	dispatch_main();
 }

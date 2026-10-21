@@ -1450,9 +1450,8 @@ _dispatch_fd_entry_create(dispatch_queue_t q)
 
 #if defined(__wasi__)
 // Some WASI hosts refuse fd_fdstat_set_flags on stdio and directory
-// handles. Wasmtime returns EBADF. Hosts without the call return ENOTSUP or
-// ENOSYS. fstat and F_GETFL succeeded on the fd, so the error is host
-// policy, not a libdispatch bug. The fd stays blocking.
+// handles (EBADF, ENOTSUP, or ENOSYS). That is host policy, not a bug, so
+// the fd stays blocking.
 #define _DISPATCH_IO_SETFL_HOST_ERRORS \
 		case EBADF: case ENOTSUP: case ENOSYS: \
 			orig_flags = -1; \

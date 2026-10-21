@@ -24,9 +24,7 @@
  * host turn, and checks the counters below.
  */
 #include <dispatch/dispatch.h>
-#define __DISPATCH_BUILDING_DISPATCH__ 1
-#include <private/private.h>
-#undef __DISPATCH_BUILDING_DISPATCH__
+#include <dispatch/private.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,8 +95,10 @@ host_event_loop_register_from_work_item(void)
 			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
 	dispatch_semaphore_t done = dispatch_semaphore_create(0);
 	dispatch_async(queue, ^{
-		_dispatch_wasi_event_loop_set_scheduler(schedule_host_turn, NULL);
-		// still inside the drain step: no turn may have been requested yet
+		_dispatch_wasi_event_loop_set_scheduler(schedule_host_turn,
+				NULL);
+		// still inside the drain step: no turn may have been requested
+		// yet
 		schedule_calls_at_registration = schedule_calls;
 	});
 	dispatch_async(queue, ^{ dispatch_semaphore_signal(done); });
@@ -128,7 +128,8 @@ __attribute__((export_name("host_event_loop_submit_second_burst")))
 int
 host_event_loop_submit_second_burst(void)
 {
-	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+	dispatch_async(dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
 		second_burst_count++;
 	});
 	return second_burst_count;
@@ -139,8 +140,10 @@ int
 host_event_loop_submit_timer_only(void)
 {
 	// 250 ms: long enough that the runner must arm a host timeout
+	dispatch_queue_t global = dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC),
-			dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+			global, ^{
 		timer_count++;
 	});
 	return timer_count;
@@ -219,10 +222,11 @@ __attribute__((export_name("host_event_loop_submit_serial_lane")))
 int
 host_event_loop_submit_serial_lane(void)
 {
-	serial_lane = dispatch_queue_create("host-serial-lane", NULL);
+	serial_lane = dispatch_queue_create("wasi.host_event_loop.serial_lane",
+			DISPATCH_QUEUE_SERIAL);
 	dispatch_async_f(serial_lane, NULL, serial_lane_item);
-	dispatch_async_f(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0),
-			NULL, serial_lane_low_item);
+	dispatch_async_f(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW,
+			0), NULL, serial_lane_low_item);
 	return serial_lane_count;
 }
 
