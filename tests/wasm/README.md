@@ -45,8 +45,9 @@ them:
 - `dispatch_async` never runs its block before the call returns; it runs at
   the next pump point (`deferred-submission.c`).
 - A blocking wait never drains the main queue; with only main-queue work
-  pending it crashes with `with only main-queue work`, and an expired
-  wait runs no work (`timed-wait-main-backlog.c`, `expired-wait.c`).
+  pending it crashes with a deadlock message that ends in
+  `with only main-queue work`, and an expired wait runs no work
+  (`timed-wait-main-backlog.c`, `expired-wait.c`).
 - Drains do not nest: blocks submitted from a running item run in the outer
   drain, FIFO within one queue, one item per step on a serial queue
   (`deferred-submission.c`, `smoke.c`).
@@ -224,6 +225,9 @@ Ordering and fairness:
 - `pumped-ownership.c` - a root item that a top-level wait pumps runs as a
   worker: it does not inherit the drain locks, thread frames, or main-queue
   ownership of the code that waits (`dispatch_assert_queue` checks).
+- `pumped-mgr-under-sync.c` - a top-level wait inside an uncontended
+  `dispatch_sync` block pumps two manager items. The manager drain does not
+  narrow, although the interrupted sync frame belongs to the main queue.
 - `root-fairness.c` - a self-replenishing HIGH root does not starve a LOW
   root item: the drain rotates among pending roots.
 - `main-root-fairness.c` - main-queue work that reposts itself gives one

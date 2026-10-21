@@ -19,13 +19,18 @@
  */
 
 /*
- * A timed semaphore wait whose deadline lapses while the cooperative drain is
- * running the very item that signals it: a 10 ms timer fires during the
- * 20 ms wait's park, and its handler burns 50 ms before signaling. The drain
- * cannot be preempted at the deadline, so by the time the wait can return
- * the semaphore has been signaled - the wait must report success and consume
- * the signal, never "timed out" with the count stranded (which would make a
- * later unrelated wait succeed with no matching signal).
+ * A timed semaphore wait whose deadline lapses while the cooperative drain
+ * runs the item that signals it. A 10 ms timer fires during the park of a
+ * 200 ms wait. Its handler runs until 50 ms after the wait deadline, then
+ * signals. The drain cannot stop the item at the deadline, so the semaphore
+ * is signaled by the time the wait can return. The wait must report success
+ * and consume the signal. It must never report a timeout with the count left
+ * behind, because a later unrelated wait would then succeed with no matching
+ * signal.
+ *
+ * The 190 ms between the timer and the wait deadline lets the park oversleep
+ * on a loaded host. The handler waits for an absolute time after the
+ * deadline, so the signal always lands after the deadline.
  */
 #include <dispatch/dispatch.h>
 #include <stdint.h>
@@ -33,6 +38,10 @@
 #include <bsdtests.h>
 #include "dispatch_test.h"
 #include "wasi-test.h"
+
+#define TIMER_MS 10
+#define WAIT_MS 200
+#define LATE_MS 50
 
 int
 main(void)
@@ -42,18 +51,23 @@ main(void)
 	dispatch_queue_t global = dispatch_get_global_queue(
 			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
 	dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_MSEC),
+	dispatch_time_t deadline = dispatch_time(DISPATCH_TIME_NOW,
+			WAIT_MS * NSEC_PER_MSEC);
+	__block uint64_t signaled_at = 0;
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, TIMER_MS * NSEC_PER_MSEC),
 			global, ^{
-		uint64_t until = wasi_test_now_ns() + 50 * NSEC_PER_MSEC;
+		uint64_t until = (uint64_t)deadline + LATE_MS * NSEC_PER_MSEC;
 		while (wasi_test_now_ns() < until) { }
+		signaled_at = wasi_test_now_ns();
 		dispatch_semaphore_signal(semaphore);
 	});
-	long result = dispatch_semaphore_wait(semaphore,
-			dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC));
+	long result = dispatch_semaphore_wait(semaphore, deadline);
 	test_long("timed wait reports success when the signal lands before "
 			"it can return", result, 0);
-	// the wait consumed the signal: an immediate retry must time out. This
-	// also catches a timed-out wait that stranded the count.
+	test_long("the signal lands after the wait deadline",
+			signaled_at > (uint64_t)deadline, 1);
+	// The wait consumed the signal, so an immediate retry must time out. This
+	// also catches a timed-out wait that left the count behind.
 	result = dispatch_semaphore_wait(semaphore, DISPATCH_TIME_NOW);
 	test_long("immediate retry times out because the signal was consumed "
 			"exactly once", !result, 0);

@@ -404,7 +404,6 @@ DISPATCH_NOINLINE
 static _dispatch_wasi_park_result_t
 _dispatch_wasi_wait_park(uint64_t nsec)
 {
-	// Step 1: Get the uptime deadline of a timed wait.
 	uint64_t deadline = 0;
 	if (nsec != DISPATCH_TIME_FOREVER &&
 			(os_add_overflow(_dispatch_uptime(), nsec, &deadline) ||
@@ -413,7 +412,6 @@ _dispatch_wasi_wait_park(uint64_t nsec)
 		// indefinite wait instead of sleeping to a wrapped deadline.
 		nsec = DISPATCH_TIME_FOREVER;
 	}
-	// Step 2: Sleep, or return the deadlock that prevents a wake.
 	if (nsec == DISPATCH_TIME_FOREVER) {
 		if (_dispatch_wasi_in_drain()) {
 			// No other work or timer can run while a drained item blocks

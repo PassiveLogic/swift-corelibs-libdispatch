@@ -3571,16 +3571,13 @@ _dispatch_queue_drain_should_narrow(dispatch_invoke_context_t dic)
 #elif defined(__wasi__)
 // WASI has no workqueue to narrow, but the sole thread must not stay in one
 // lane drain, so a lane runs one item and then goes back on its target queue.
-// A root step starts narrowed. In a main-queue step, the shared main drain
-// is the parent frame of the lane. Manager drains and
+// Root and main-queue steps start narrowed. Manager drains and
 // dispatch_with_disabled_narrowing() do not narrow.
 #define _dispatch_queue_drain_init_narrowing_check_deadline(dic, pri) \
 		((void)(pri), \
 		(dic)->dic_next_narrow_check = DISPATCH_THREAD_IS_NARROWING)
 #define _dispatch_queue_drain_should_narrow(dic) \
-		((dic)->dic_next_narrow_check == DISPATCH_THREAD_IS_NARROWING || \
-		((dic)->dic_next_narrow_check == 0 && \
-		_dispatch_thread_frame_find_queue(_dispatch_main_q._as_dq)))
+		((dic)->dic_next_narrow_check != 0)
 #else
 #define _dispatch_queue_drain_init_narrowing_check_deadline(rq, dic) ((void)0)
 #define _dispatch_queue_drain_should_narrow(dic)  false
@@ -4305,8 +4302,8 @@ _dispatch_workloop_invoke2(dispatch_workloop_t dwl,
 			_dispatch_continuation_pop_inline(dc, dic, flags, dwl);
 			qos = dwl->dwl_drained_qos;
 #if defined(__wasi__)
-			// Like a lane drain, a workloop runs one item per turn, then goes back on
-			// its target queue.
+			// Like a lane drain, a workloop runs one item per turn, then
+			// goes back on its target queue.
 			if (unlikely(_dispatch_queue_drain_should_narrow(dic))) {
 				goto out_narrowed;
 			}
@@ -5445,9 +5442,9 @@ DISPATCH_NOINLINE
 void
 _dispatch_wasi_mgr_queue_drain(void)
 {
-	// No manager thread: drain the manager queue inline, as the kevent workqueue
-	// manager drain does. Restore the current queue, because the sole thread is
-	// not a pristine worker.
+	// No manager thread: drain the manager queue inline, as the kevent
+	// workqueue manager drain does. Restore the current queue, because the
+	// sole thread is not a pristine worker.
 	dispatch_queue_t old_dq = _dispatch_queue_get_current();
 	_dispatch_queue_set_current(&_dispatch_mgr_q);
 	_dispatch_queue_mgr_lock(&_dispatch_mgr_q);
@@ -5771,10 +5768,10 @@ static void
 _dispatch_root_queue_poke_slow(dispatch_queue_global_t dq, int n, int floor)
 {
 #if defined(__wasi__)
-	// No thread to create: count one pending worker and note the queue for the
-	// drain. _dispatch_wasi_root_queue_drain() undoes the count, as
-	// _dispatch_worker_thread2 does. This cmpxchg must be the only increment, so
-	// the fast path in _dispatch_root_queue_poke() must not compile in.
+	// No thread to create: count one pending worker and note the queue for
+	// the drain. _dispatch_wasi_root_queue_drain() undoes the count, as
+	// _dispatch_worker_thread2 does. This cmpxchg must be the only increment,
+	// so the fast path in _dispatch_root_queue_poke() must not compile in.
 #if !DISPATCH_USE_INTERNAL_WORKQUEUE
 #error the WASI cooperative drain requires DISPATCH_USE_INTERNAL_WORKQUEUE
 #endif
@@ -6248,25 +6245,22 @@ DISPATCH_NOINLINE
 void
 _dispatch_wasi_root_queue_drain(dispatch_queue_global_t dq)
 {
-	// One worker turn, as _dispatch_worker_thread2 runs it, with the worker lock
-	// owner id and an empty frame chain. So a pumped item does not inherit the
-	// queues and once gates of the interrupted frame. The narrowing check limits
-	// the turn to one root item.
+	// One worker turn, as _dispatch_worker_thread2 runs it, with the worker
+	// lock owner id and an empty frame chain. So a pumped item does not
+	// inherit the queues and once gates of the interrupted frame. The
+	// narrowing check limits the turn to one root item.
 	struct dispatch_tsd *tsd = _dispatch_get_tsd_base();
 	pid_t old_tid = tsd->tid;
 	dispatch_thread_frame_s dtf;
-	// Step 1: Consume the worker request from _dispatch_root_queue_poke_slow.
+	// Consume the worker request from _dispatch_root_queue_poke_slow.
 	int pending = os_atomic_dec2o(dq, dgq_pending, relaxed);
 	dispatch_assert(pending >= 0);
 	(void)pending;
 
-	// Step 2: Take the worker identity.
 	tsd->tid = DISPATCH_WASI_WORKER_TID;
 	_dispatch_thread_frame_push_and_rebase(&dtf, (dispatch_queue_t)NULL, NULL);
-	// Step 3: Drain one root item.
 	_dispatch_root_queue_drain(dq, dq->dq_priority,
 			DISPATCH_INVOKE_WORKER_DRAIN | DISPATCH_INVOKE_REDIRECTING_DRAIN);
-	// Step 4: Restore the identity of the interrupted frame.
 	_dispatch_thread_frame_pop(&dtf);
 	tsd->tid = old_tid;
 }
@@ -7043,6 +7037,9 @@ _dispatch_main_queue_drain(dispatch_queue_main_t dq)
 	_dispatch_set_basepri_override_qos(DISPATCH_QOS_SATURATED);
 
 	dispatch_invoke_context_s dic = { };
+#if defined(__wasi__)
+	dic.dic_next_narrow_check = DISPATCH_THREAD_IS_NARROWING;
+#endif
 	struct dispatch_object_s *dc, *next_dc, *tail;
 	dc = os_mpsc_capture_snapshot(os_mpsc(dq, dq_items), &tail);
 	do {
@@ -7296,17 +7293,17 @@ dispatch_main(void)
 {
 	_dispatch_root_queues_init();
 #if defined(__wasi__)
-	// WASI cannot park the main thread, so dispatch_main() is the drain loop. It
-	// never returns. A program ends with exit() from a work item.
+	// WASI cannot park the main thread, so dispatch_main() is the drain loop.
+	// It never returns. A program ends with exit() from a work item.
 
-	// Step 1: Crash on a call from a drained work item. Drains do not nest,
-	// so no queued work or due timer could run under it.
+	// Drains do not nest, so no queued work or due timer could run under a
+	// call from a drained work item.
 	if (unlikely(_dispatch_wasi_in_drain())) {
 		DISPATCH_CLIENT_CRASH(0, "dispatch_main() called from a work item");
 	}
 	_dispatch_object_debug(&_dispatch_main_q, "%s", __func__);
-	// Step 2: Drain all work, then wait for the next timer or event source.
-	// With neither, the wait would never end, so crash.
+	// Drain all work, then wait for the next timer or event source. With
+	// neither, the wait would never end, so crash.
 	for (;;) {
 		_dispatch_wasi_drain();
 		uint64_t deadline = _dispatch_wasi_next_timer_ns();
