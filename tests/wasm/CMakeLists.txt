@@ -129,6 +129,8 @@ add_wasi_unit_test(dispatch_wasi_reposting_workloop reposting-workloop.c 5)
 add_wasi_unit_test(dispatch_wasi_timed_wait_main_backlog
   timed-wait-main-backlog.c 5)
 add_wasi_unit_test(dispatch_wasi_pumped_ownership pumped-ownership.c 5)
+add_wasi_unit_test(dispatch_wasi_pumped_mgr_under_sync
+  pumped-mgr-under-sync.c 5)
 add_wasi_unit_test(dispatch_wasi_main_queue_perform main-queue-perform.c 5)
 add_wasi_unit_test(dispatch_wasi_async_and_wait_pump async-and-wait-pump.c 5)
 add_wasi_unit_test(dispatch_wasi_constructor_main_queue

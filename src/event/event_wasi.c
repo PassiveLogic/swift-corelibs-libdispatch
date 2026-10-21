@@ -53,7 +53,8 @@ struct _dispatch_wasi_timeout_s {
 	bool dwt_armed;
 };
 
-static struct _dispatch_wasi_timeout_s _dispatch_wasi_timeout[DISPATCH_CLOCK_COUNT];
+static struct _dispatch_wasi_timeout_s
+		_dispatch_wasi_timeout[DISPATCH_CLOCK_COUNT];
 
 static bool _dispatch_wasi_root_pending[DISPATCH_ROOT_QUEUE_COUNT];
 static size_t _dispatch_wasi_next_root = DISPATCH_ROOT_QUEUE_COUNT - 1;
@@ -826,12 +827,11 @@ _dispatch_wasi_drain_step(bool include_main)
 	}
 	_dispatch_wasi_draining = true;
 
-	// Step 1: Hide a borrowed wlh, such as the _dispatch_fake_wlh of
+	// Hide a borrowed wlh, such as the _dispatch_fake_wlh of
 	// dispatch_async_and_wait, from the drains. Never release it.
 	void *borrowed_wlh = _dispatch_thread_getspecific(dispatch_wlh_key);
 	_dispatch_thread_setspecific(dispatch_wlh_key, NULL);
 
-	// Step 2: Run the first phase that has work (see the file header).
 	bool did_work = true;
 	if (_dispatch_wasi_merge_due_timers() ||
 			_dispatch_timers_heap[0].dth_dirty_bits) {
@@ -877,7 +877,6 @@ _dispatch_wasi_drain_step(bool include_main)
 		}
 	}
 
-	// Step 3: Restore the borrowed wlh. Hand leftover work to the host.
 	_dispatch_thread_setspecific(dispatch_wlh_key, borrowed_wlh);
 	_dispatch_wasi_draining = false;
 	_dispatch_wasi_hand_off_pending();
@@ -942,7 +941,6 @@ bool
 _dispatch_wasi_event_loop_perform(unsigned long max_steps,
 		bool consumes_scheduled_turn)
 {
-	// Step 1: Crash on a call that the SPI does not allow.
 	if (!_dispatch_wasi_host_schedule) {
 		DISPATCH_CLIENT_CRASH(0, "Scheduler not registered");
 	}
@@ -956,13 +954,12 @@ _dispatch_wasi_event_loop_perform(unsigned long max_steps,
 		DISPATCH_CLIENT_CRASH(0, "Perform called from a work item");
 	}
 
-	// Step 2: Consume the turn if this call owns it. Clear the timer latch.
 	if (consumes_scheduled_turn) {
 		_dispatch_wasi_host_turn_scheduled = false;
 	}
 	_dispatch_wasi_armed_timer_unseen = false;
 
-	// Step 3: Run up to max_steps drain steps. Pokes here request no turn.
+	// Pokes during these steps request no host turn.
 	_dispatch_wasi_performing = true;
 	_dispatch_wasi_poll_harvest(0);
 	for (unsigned long step = 0; step < max_steps; step++) {
@@ -970,7 +967,6 @@ _dispatch_wasi_event_loop_perform(unsigned long max_steps,
 	}
 	_dispatch_wasi_performing = false;
 
-	// Step 4: Request one follow-up turn if runnable work remains.
 	bool more_work = _dispatch_wasi_has_runnable_work();
 	if (more_work) {
 		_dispatch_wasi_schedule_host_turn();
