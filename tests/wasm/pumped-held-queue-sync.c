@@ -32,17 +32,19 @@
 int
 main(void)
 {
-	dispatch_queue_t held = dispatch_queue_create("wasi.pumped.held", NULL);
-	dispatch_queue_t other = dispatch_queue_create("wasi.pumped.other", NULL);
-	dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+	dispatch_queue_t held = dispatch_queue_create("wasi.pumped.held",
+			DISPATCH_QUEUE_SERIAL);
+	dispatch_queue_t other = dispatch_queue_create("wasi.pumped.other",
+			DISPATCH_QUEUE_SERIAL);
+	dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
 	dispatch_sync(held, ^{
 		dispatch_async(other, ^{
-			dispatch_semaphore_signal(sem);
+			dispatch_semaphore_signal(semaphore);
 			puts("pumped item syncs onto the held queue");
 			fflush(stdout);
 			dispatch_sync(held, ^{ });
 		});
-		dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+		dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
 	});
 	puts("FAIL: inner sync returned");
 	return 1;

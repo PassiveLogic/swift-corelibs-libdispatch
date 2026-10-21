@@ -19,47 +19,50 @@
  */
 
 /*
- * A timed semaphore wait inside a drained work item does not crash. It
- * waits for its full timeout, then reports a timeout. A far-future timer
- * stays armed meanwhile.
+ * A timed semaphore wait issued from inside a drained work item pumps
+ * nothing: with nobody left to signal it, it sleeps to its own 200 ms
+ * deadline and reports a timeout. A 10 s timer on the same serial queue
+ * must not extend that wait; the 5 s test timeout catches a wait that sleeps
+ * to the timer. The work item itself is pumped by a top-level wait in main.
  */
 #include <dispatch/dispatch.h>
 #include <stdint.h>
-#include <stdio.h>
-#include <time.h>
 
-// the timeout of the nested wait
-#define WAIT_MS 200
-
-static uint64_t
-now_ms(void)
-{
-	struct timespec time;
-	clock_gettime(CLOCK_MONOTONIC, &time);
-	return ((uint64_t)time.tv_sec * NSEC_PER_SEC + (uint64_t)time.tv_nsec) /
-			NSEC_PER_MSEC;
-}
+#include <bsdtests.h>
+#include "dispatch_test.h"
+#include "wasi-test.h"
 
 int
 main(void)
 {
-	__block int passed = 0;
-	dispatch_queue_t queue = dispatch_queue_create("wasi.nested.timed", NULL);
+	dispatch_test_start("Dispatch WASI Nested Timed Wait");
+
+	__block long result = 0;
+	__block long elapsed_ms = 0;
+	dispatch_queue_t queue = dispatch_queue_create("wasi.nested.timed",
+			DISPATCH_QUEUE_SERIAL);
 	dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
 	dispatch_semaphore_t done = dispatch_semaphore_create(0);
-	// 10 s: the timer stays armed for the whole test
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC), queue, ^{});
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC),
+			queue, ^{ });
 	dispatch_async(queue, ^{
-		uint64_t start = now_ms();
-		long result = dispatch_semaphore_wait(semaphore,
-				dispatch_time(DISPATCH_TIME_NOW, WAIT_MS * NSEC_PER_MSEC));
-		uint64_t elapsed = now_ms() - start;
-		passed = result != 0 && elapsed >= WAIT_MS;
+		uint64_t start = wasi_test_now_ns();
+		result = dispatch_semaphore_wait(semaphore,
+				dispatch_time(DISPATCH_TIME_NOW,
+				200 * NSEC_PER_MSEC));
+		elapsed_ms = (long)((wasi_test_now_ns() - start) /
+				NSEC_PER_MSEC);
 		dispatch_semaphore_signal(done);
 	});
 	// top-level wait: pumps the queued item
 	dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
-	if (!passed) return 1;
-	puts("probe OK");
+	test_long("nested timed semaphore wait times out", !result, 0);
+	test_long_greater_than_or_equal("nested timed semaphore wait sleeps to "
+			"its 200 ms deadline", elapsed_ms, 200);
+	// the pending 10 s timer keeps its own reference to the queue
+	dispatch_release(semaphore);
+	dispatch_release(done);
+	dispatch_release(queue);
+	test_stop();
 	return 0;
 }

@@ -32,8 +32,9 @@ static dispatch_once_t predicate;
 int
 main(void)
 {
-	// owner bits 0x100: not 0, not the WASI owner value, not DONE
-	*(volatile dispatch_once_t *)&predicate = 0x100;
+	// owner bits 0x100: not 0, not 4 or 8 (the two WASI owner values),
+	// not DONE
+	predicate = 0x100;
 	puts("garbage predicate set");
 	fflush(stdout);
 	dispatch_once(&predicate, ^{

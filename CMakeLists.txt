@@ -131,30 +131,17 @@ include(DTrace)
 
 include(EnableFramePointers)
 
-# NOTE(abdulras) this is the CMake supported way to control whether we generate
-# shared or static libraries.  This impacts the behaviour of `add_library` in
-# what type of library it generates.
 if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
   set(BUILD_SHARED_LIBS_DEFAULT OFF)
 else()
   set(BUILD_SHARED_LIBS_DEFAULT ON)
 endif()
+# NOTE(abdulras) this is the CMake supported way to control whether we generate
+# shared or static libraries.  This impacts the behaviour of `add_library` in
+# what type of library it generates.
 option(BUILD_SHARED_LIBS "build shared libraries" ${BUILD_SHARED_LIBS_DEFAULT})
-if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
-  if(BUILD_SHARED_LIBS)
-    message(FATAL_ERROR "libdispatch supports only static libraries on WASI; set BUILD_SHARED_LIBS=OFF")
-  endif()
-  # The cooperative backend needs single-threaded wasm32-wasip1. Reject a
-  # threaded target (wasm atomics or -pthread) at configure time.
-  unset(DISPATCH_WASI_SINGLE_THREADED CACHE)
-  check_c_source_compiles("
-#if defined(__wasm_atomics__) || defined(_REENTRANT)
-#error threaded WASI target
-#endif
-int main(void) { return 0; }" DISPATCH_WASI_SINGLE_THREADED)
-  if(NOT DISPATCH_WASI_SINGLE_THREADED)
-    message(FATAL_ERROR "libdispatch on WASI supports only the single-threaded wasm32-wasip1 target")
-  endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI" AND BUILD_SHARED_LIBS)
+  message(FATAL_ERROR "libdispatch supports only static libraries on WASI; set BUILD_SHARED_LIBS=OFF")
 endif()
 
 option(DISPATCH_ENABLE_ASSERTS "enable debug assertions" FALSE)

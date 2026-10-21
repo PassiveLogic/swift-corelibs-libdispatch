@@ -52,16 +52,9 @@
 
 #if USE_LIBDISPATCH_INIT_CONSTRUCTOR
 #if defined(__wasi__)
-// Priority 101 makes libdispatch ready before default-priority client
-// constructors, as a shared libdispatch is on other platforms. WASI links
-// libdispatch statically. wasm-ld runs default-priority constructors in
-// link order, so a client constructor could run first and see an unbound
-// main queue. 101 is the earliest priority open to code outside the
-// implementation.
-//
-// A client constructor at priority 101 or lower can run before this one.
-// It must not use Dispatch. The main queue is not bound to the thread yet,
-// so its work would run as ordinary serial-queue work.
+// WASI links libdispatch statically, and wasm-ld runs default-priority
+// constructors in link order. Priority 101, the earliest open to clients,
+// makes libdispatch ready before them, as a shared library is elsewhere.
 DISPATCH_NOTHROW __attribute__((constructor(101)))
 #else
 DISPATCH_NOTHROW __attribute__((constructor))
@@ -1338,21 +1331,6 @@ _dispatch_log(const char *msg, ...)
 	va_end(ap);
 }
 
-#if defined(__wasi__)
-DISPATCH_NOINLINE DISPATCH_COLD
-void
-_dispatch_wasi_crash_log_dynamic(const char *msg)
-{
-	// Write msg again only when LIBDISPATCH_LOG disabled the log or sent it
-	// to a file. The only caller, _dispatch_assert_crash(), already sent msg
-	// through _dispatch_log(), which initialized the log state.
-	if (dispatch_log_disabled || (dispatch_logfile != -1 &&
-			dispatch_logfile != STDERR_FILENO)) {
-		fprintf(stderr, "%s\n", msg);
-	}
-}
-#endif // defined(__wasi__)
-
 #endif // DISPATCH_USE_OS_DEBUG_LOG
 
 #pragma mark -
@@ -1439,8 +1417,7 @@ _dispatch_temporary_resource_shortage(void)
 #if defined(__wasi__)
 	// No other WASI thread can free memory while this one sleeps. Thus the
 	// allocation retry of the caller can never succeed.
-	DISPATCH_CLIENT_CRASH(0, "Out of memory: allocation cannot be "
-			"retried on single-threaded WASI");
+	DISPATCH_CLIENT_CRASH(0, "Out of memory");
 #else
 	sleep(1);
 	__asm__ __volatile__("");  // prevent tailcall

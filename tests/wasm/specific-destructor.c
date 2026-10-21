@@ -19,50 +19,53 @@
  */
 
 /*
- * Replacing a queue-specific value submits the destructor of the old value
- * to a root queue. The destructor must run at a later pump point, never on
- * the submitting stack under dqsh_lock. Otherwise a destructor that reads
- * the specifics of the same queue deadlocks on the lock that its own caller
+ * Replacing a queue-specific value submits the old value's destructor to a
+ * root queue. The destructor must run at a later pump point, never on the
+ * submitting stack under dqsh_lock: a destructor that touches the same
+ * queue's specifics would otherwise deadlock on the lock its own caller
  * still holds.
  */
 #include <dispatch/dispatch.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include "wasi-test-pump.h"
+#include <stdint.h>
 
-static int skey;
-static dispatch_queue_t q;
-static int destructor_ran;
+#include <bsdtests.h>
+#include "dispatch_test.h"
+#include "wasi-test.h"
+
+static int specific_key;
+static dispatch_queue_t queue;
+static long destructor_context;
 
 static void
-old_value_destructor(void *ctxt)
+old_value_destructor(void *context)
 {
-	// read the specifics of the same queue from inside the destructor. This
-	// must not find dqsh_lock held.
-	if (dispatch_queue_get_specific(q, &skey) == NULL) {
-		printf("FAIL: replacement value not visible in destructor\n");
-		exit(1);
-	}
-	destructor_ran = (int)(intptr_t)ctxt;
+	// re-enter the same queue's specifics; this deadlocks if the destructor
+	// runs under dqsh_lock
+	void *value = dispatch_queue_get_specific(queue, &specific_key);
+	test_ptr_notnull("replacement value is visible in the old value's "
+			"destructor", value);
+	destructor_context = (long)(intptr_t)context;
 }
 
 int
 main(void)
 {
-	q = dispatch_queue_create("wasi.specific", NULL);
-	dispatch_queue_set_specific(q, &skey, (void *)1, old_value_destructor);
+	dispatch_test_start("Dispatch WASI Specific Destructor");
+
+	queue = dispatch_queue_create("wasi.specific", DISPATCH_QUEUE_SERIAL);
+	dispatch_queue_set_specific(queue, &specific_key, (void *)1,
+			old_value_destructor);
 	// replace: submits old_value_destructor((void *)1)
-	dispatch_queue_set_specific(q, &skey, (void *)2, NULL);
-	if (destructor_ran) {
-		printf("FAIL: old-value destructor ran inside set_specific\n");
-		exit(1);
-	}
+	dispatch_queue_set_specific(queue, &specific_key, (void *)2, NULL);
+	test_long("old value's destructor does not run inside "
+			"dispatch_queue_set_specific", destructor_context, 0);
 	// the destructor was queued before the pump's signal block
 	wasi_test_pump();
-	if (destructor_ran != 1) {
-		printf("FAIL: old-value destructor never ran\n");
-		exit(1);
-	}
-	printf("specific destructor OK\n");
+	test_long("old value's destructor runs at the next pump with the old "
+			"value", destructor_context, 1);
+	// the current value has no destructor, so disposing the specifics
+	// submits nothing
+	dispatch_release(queue);
+	test_stop();
 	return 0;
 }

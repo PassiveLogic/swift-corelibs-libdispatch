@@ -18,120 +18,131 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
+/*
+ * Core Dispatch smoke for single-threaded WASI, pumped only by top-level
+ * blocking waits: dispatch_once and queue specifics, serial FIFO order (also
+ * with a backlog submitted from inside a running item), sync and barrier
+ * sync, semaphore timing, group wait and notify, dispatch_after and a
+ * repeating timer, dispatch_apply, and dispatch_data concatenation.
+ */
 #include <dispatch/dispatch.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
-#include <time.h>
 
-/*
- * A smoke test of the core Dispatch APIs on single-threaded WASI. Each test
- * prints PASS when its checks hold. The last line counts the passed tests.
- */
+#include <bsdtests.h>
+#include "dispatch_test.h"
+#include "wasi-test.h"
 
-// the number of tests that main() runs
-#define TEST_COUNT 9
-// the number of blocks that each FIFO test queues
-#define FIFO_ITEMS 10
-// the value that the outer block of test_nested_fifo records
-#define OUTER_MARK 100
-
-static int failures;
-#define CHECK(value) do { if (!(value)) { failures++; \
-	printf("check failed: %s:%d: %s\n", __FILE__, __LINE__, #value); } } while (0)
-
-static uint64_t
-now_ms(void)
-{
-	struct timespec time;
-	clock_gettime(CLOCK_MONOTONIC, &time);
-	return ((uint64_t)time.tv_sec * NSEC_PER_SEC + (uint64_t)time.tv_nsec) /
-			NSEC_PER_MSEC;
-}
-
-static int once_count;
-static void once(void *context) { (void)context; once_count++; }
+static long once_count;
 static char specific_key, specific_value;
+
+static void
+count_once(void *context)
+{
+	(void)context;
+	once_count++;
+}
 
 static void
 test_once_and_specifics(void)
 {
 	static dispatch_once_t predicate;
-	dispatch_once_f(&predicate, NULL, once);
-	dispatch_once_f(&predicate, NULL, once);
-	CHECK(once_count == 1);
-	dispatch_queue_t queue = dispatch_queue_create("wasi.specifics", NULL);
-	dispatch_queue_set_specific(queue, &specific_key, &specific_value, NULL);
-	CHECK(dispatch_get_specific(&specific_key) == NULL);
-	__block void *value;
-	dispatch_sync(queue, ^{ value = dispatch_get_specific(&specific_key); });
-	CHECK(value == &specific_value);
+	dispatch_once_f(&predicate, NULL, count_once);
+	dispatch_once_f(&predicate, NULL, count_once);
+	test_long("dispatch_once_f runs its function once", once_count, 1);
+	dispatch_queue_t queue = dispatch_queue_create("wasi.specifics",
+			DISPATCH_QUEUE_SERIAL);
+	dispatch_queue_set_specific(queue, &specific_key, &specific_value,
+			NULL);
+	test_ptr_null("dispatch_get_specific off the queue returns NULL",
+			dispatch_get_specific(&specific_key));
+	__block void *value = NULL;
+	dispatch_sync(queue, ^{
+		value = dispatch_get_specific(&specific_key);
+	});
+	test_ptr("dispatch_get_specific on the queue returns its value", value,
+			&specific_value);
 	dispatch_release(queue);
+}
+
+// number of leading entries that hold submission numbers 1, 2, 3, ...
+static long
+in_order_count(const long *order, long count)
+{
+	long index = 0;
+	while (index < count && order[index] == index + 1) {
+		index++;
+	}
+	return index;
 }
 
 static void
 test_fifo(void)
 {
-	__block int count = 0;
-	static int order[FIFO_ITEMS];
-	dispatch_queue_t queue = dispatch_queue_create("wasi.fifo", NULL);
-	for (int i = 0; i < FIFO_ITEMS; i++) {
-		// the bounds check stops an extra item from writing past the end of
-		// order. The count check below still catches it.
-		dispatch_async(queue, ^{
-			if (count < FIFO_ITEMS) order[count] = i;
-			count++;
-		});
+	// each item records its submission number (1 to 10) as it runs
+	__block long count = 0;
+	static long order[10];
+	dispatch_queue_t queue = dispatch_queue_create("wasi.fifo",
+			DISPATCH_QUEUE_SERIAL);
+	for (long i = 1; i <= 10; i++) {
+		dispatch_async(queue, ^{ order[count++] = i; });
 	}
-	CHECK(count == 0); // nothing runs before a pump
+	test_long("no queued item runs before a pump", count, 0);
 	dispatch_sync(queue, ^{ }); // contended: pumps the ten items first
-	CHECK(count == FIFO_ITEMS);
-	for (int i = 0; i < FIFO_ITEMS; i++) CHECK(order[i] == i);
+	test_long("contended dispatch_sync runs the ten queued items first",
+			count, 10);
+	test_long("serial queue runs items in submission order",
+			in_order_count(order, 10), 10);
 	dispatch_release(queue);
 }
 
 static void
 test_nested_fifo(void)
 {
-	__block int count = 0;
-	// the outer block, then the ten nested items
-	static int order[FIFO_ITEMS + 1];
-	const int capacity = (int)(sizeof(order) / sizeof(order[0]));
-	dispatch_queue_t queue = dispatch_queue_create("wasi.fifo", NULL);
+	// the outer item is submission 1 and records itself after it submits
+	// the ten nested items, submissions 2 to 11
+	__block long count = 0;
+	static long order[11];
+	dispatch_queue_t queue = dispatch_queue_create("wasi.fifo.nested",
+			DISPATCH_QUEUE_SERIAL);
 	dispatch_async(queue, ^{
-		for (int i = 0; i < FIFO_ITEMS; i++) {
-			// the bounds check stops an extra item from writing past the end
-			// of order. The count check below still catches it.
-			dispatch_async(queue, ^{
-				if (count < capacity) order[count] = i;
-				count++;
-			});
+		for (long i = 2; i <= 11; i++) {
+			dispatch_async(queue, ^{ order[count++] = i; });
 		}
-		if (count < capacity) order[count] = OUTER_MARK;
-		count++;
+		order[count++] = 1;
 	});
-	// The first contended sync is queued ahead of the ten nested items. It
-	// pumps only the outer block. The second sync pumps the ten.
+	// the first contended sync is queued ahead of the ten nested items and
+	// pumps only the outer block; the second pumps the ten
 	dispatch_sync(queue, ^{ });
-	CHECK(count == 1 && order[0] == OUTER_MARK);
+	test_long("first contended dispatch_sync runs only the outer item",
+			count, 1);
+	test_long("outer item runs first", order[0], 1);
 	dispatch_sync(queue, ^{ });
-	CHECK(count == capacity && order[0] == OUTER_MARK);
-	for (int i = 0; i < FIFO_ITEMS; i++) CHECK(order[i + 1] == i);
+	test_long("second contended dispatch_sync runs the ten nested items",
+			count, 11);
+	test_long("nested items run in submission order after the outer item",
+			in_order_count(order, 11), 11);
 	dispatch_release(queue);
 }
 
 static void
 test_sync_and_barrier(void)
 {
-	__block int value = 0;
-	dispatch_queue_t serial = dispatch_queue_create("wasi.sync", NULL);
+	__block long value = 0;
+	dispatch_queue_t serial = dispatch_queue_create("wasi.sync",
+			DISPATCH_QUEUE_SERIAL);
 	dispatch_async(serial, ^{ value = 1; });
-	dispatch_sync(serial, ^{ CHECK(value == 1); value = 2; });
-	CHECK(value == 2);
+	dispatch_sync(serial, ^{
+		test_long("dispatch_sync runs after the item queued ahead of "
+				"it", value, 1);
+		value = 2;
+	});
+	test_long("dispatch_sync runs its block before it returns", value, 2);
 	dispatch_queue_t concurrent = dispatch_queue_create("wasi.barrier",
 			DISPATCH_QUEUE_CONCURRENT);
 	dispatch_barrier_sync(concurrent, ^{ value = 3; });
-	CHECK(value == 3);
+	test_long("dispatch_barrier_sync runs its block before it returns",
+			value, 3);
 	dispatch_release(concurrent);
 	dispatch_release(serial);
 }
@@ -139,68 +150,75 @@ test_sync_and_barrier(void)
 static void
 test_semaphore(void)
 {
-	// the timeout of a wait that nothing signals
-	const uint64_t wait_ms = 100;
 	dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-	uint64_t start = now_ms();
+	uint64_t start = wasi_test_now_ns();
 	long result = dispatch_semaphore_wait(semaphore,
-			dispatch_time(DISPATCH_TIME_NOW, wait_ms * NSEC_PER_MSEC));
-	uint64_t elapsed = now_ms() - start;
-	CHECK(result != 0 && elapsed >= wait_ms);
+			dispatch_time(DISPATCH_TIME_NOW, 100 * NSEC_PER_MSEC));
+	long elapsed_ms = (long)((wasi_test_now_ns() - start) / NSEC_PER_MSEC);
+	test_long("timed semaphore wait with no signal times out", !result, 0);
+	test_long_greater_than_or_equal("timed semaphore wait lasts at least "
+			"its 100 ms timeout", elapsed_ms, 100);
 	dispatch_semaphore_signal(semaphore);
-	CHECK(dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER) == 0);
+	result = dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+	test_long("dispatch_semaphore_wait(FOREVER) takes the signaled count",
+			result, 0);
 	dispatch_release(semaphore);
 }
 
 static void
 test_group(void)
 {
-	__block int notified = 0;
-	dispatch_queue_t queue = dispatch_queue_create("wasi.group", NULL);
+	__block long notified = 0;
+	dispatch_queue_t queue = dispatch_queue_create("wasi.group",
+			DISPATCH_QUEUE_SERIAL);
 	dispatch_group_t group = dispatch_group_create();
 	dispatch_group_enter(group);
 	dispatch_group_notify(group, queue, ^{ notified++; });
 	dispatch_async(queue, ^{ dispatch_group_leave(group); });
-	CHECK(dispatch_group_wait(group, DISPATCH_TIME_FOREVER) == 0);
-	// The wait returns once the group is empty. The notify block is queued
-	// before the waiter wakes, but it can still be pending, as on threaded
-	// platforms. A sync on its queue runs after it.
-	dispatch_sync(queue, ^{});
-	CHECK(notified == 1);
+	long result = dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+	test_long("dispatch_group_wait(FOREVER) returns 0 once the group "
+			"empties", result, 0);
+	// the notify is queued on the serial queue; the wait does not run it
+	dispatch_sync(queue, ^{ });
+	test_long("group notify runs once the queue drains", notified, 1);
 	dispatch_release(group);
 	dispatch_release(queue);
 }
 
-// A 20 ms dispatch_after, then a timer source with a 20 ms interval that
-// cancels itself after TIMER_FIRES fires. The 500 ms wait timeout is far
-// longer than the dispatch_after delay.
-#define TIMER_FIRES 3
-
 static void
 test_timers(void)
 {
-	__block int fires = 0;
-	dispatch_queue_t queue = dispatch_queue_create("wasi.timer", NULL);
+	__block long fires = 0;
+	dispatch_queue_t queue = dispatch_queue_create("wasi.timer",
+			DISPATCH_QUEUE_SERIAL);
 	dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC), queue, ^{
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC),
+			queue, ^{
 		dispatch_semaphore_signal(semaphore);
 	});
-	CHECK(dispatch_semaphore_wait(semaphore,
-			dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC)) == 0);
-	dispatch_source_t timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER,
-			0, 0, queue);
+	long result = dispatch_semaphore_wait(semaphore,
+			dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC));
+	test_long("dispatch_after signals before the 500 ms wait times out",
+			result, 0);
+	dispatch_source_t timer = dispatch_source_create(
+			DISPATCH_SOURCE_TYPE_TIMER, 0, 0, queue);
 	dispatch_source_set_timer(timer,
 			dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC),
 			20 * NSEC_PER_MSEC, 0);
 	dispatch_source_set_event_handler(timer, ^{
-		if (++fires == TIMER_FIRES) dispatch_source_cancel(timer);
+		if (++fires == 3) {
+			dispatch_source_cancel(timer);
+		}
 	});
 	dispatch_source_set_cancel_handler(timer, ^{
 		dispatch_semaphore_signal(semaphore);
 	});
 	dispatch_resume(timer);
-	CHECK(dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER) == 0);
-	CHECK(fires >= TIMER_FIRES);
+	result = dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+	test_long("timer cancel handler signals the waiting semaphore",
+			result, 0);
+	test_long_greater_than_or_equal("repeating timer fires at least three "
+			"times", fires, 3);
 	dispatch_release(timer);
 	dispatch_release(semaphore);
 	dispatch_release(queue);
@@ -209,13 +227,13 @@ test_timers(void)
 static void
 test_apply(void)
 {
-	// the sum of the indexes 0 to 7 is 28
-	const size_t iterations = 8;
 	__block size_t sum = 0;
-	dispatch_apply(iterations, dispatch_get_global_queue(0, 0), ^(size_t index) {
+	dispatch_apply(8, dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^(size_t index) {
 		sum += index;
 	});
-	CHECK(sum == iterations * (iterations - 1) / 2);
+	test_sizet("dispatch_apply indices sum to 0 + 1 + ... + 7",
+			sum, 28);
 }
 
 static void
@@ -223,44 +241,39 @@ test_data(void)
 {
 	static const char first[] = "01234567";
 	static const char second[] = "abcdefgh";
-	static const char want[] = "01234567abcdefgh";
-	dispatch_data_t one = dispatch_data_create(first, sizeof(first) - 1, NULL,
+	dispatch_data_t one = dispatch_data_create(first, 8, NULL,
 			DISPATCH_DATA_DESTRUCTOR_DEFAULT);
-	dispatch_data_t two = dispatch_data_create(second, sizeof(second) - 1,
-			NULL, DISPATCH_DATA_DESTRUCTOR_DEFAULT);
+	dispatch_data_t two = dispatch_data_create(second, 8, NULL,
+			DISPATCH_DATA_DESTRUCTOR_DEFAULT);
 	dispatch_data_t joined = dispatch_data_create_concat(one, two);
 	const void *bytes;
 	size_t size;
-	dispatch_data_t mapped = dispatch_data_create_map(joined, &bytes, &size);
-	CHECK(size == sizeof(want) - 1 && memcmp(bytes, want, size) == 0);
+	dispatch_data_t mapped = dispatch_data_create_map(joined, &bytes,
+			&size);
+	test_sizet("mapped concatenation has the size of both regions",
+			size, 16);
+	test_long("mapped concatenation holds both regions in order",
+			memcmp(bytes, "01234567abcdefgh", 16), 0);
 	dispatch_release(mapped);
 	dispatch_release(joined);
 	dispatch_release(two);
 	dispatch_release(one);
 }
 
-static void
-run(const char *name, void (*test)(void), int *passed)
-{
-	int before = failures;
-	test();
-	if (before == failures) { printf("PASS %s\n", name); (*passed)++; }
-}
-
 int
 main(void)
 {
-	int passed = 0;
-	run("once_and_specifics", test_once_and_specifics, &passed);
-	run("fifo", test_fifo, &passed);
-	run("fifo_nested_backlog", test_nested_fifo, &passed);
-	run("sync_and_barrier", test_sync_and_barrier, &passed);
-	run("semaphore_timing", test_semaphore, &passed);
-	run("group_wait_notify", test_group, &passed);
-	run("after_timers_cancel", test_timers, &passed);
-	run("apply", test_apply, &passed);
-	run("data", test_data, &passed);
-	if (failures) return 1;
-	printf("ALL PASS (%d/%d)\n", passed, TEST_COUNT);
-	return passed == TEST_COUNT ? 0 : 1;
+	dispatch_test_start("Dispatch WASI Smoke");
+
+	test_once_and_specifics();
+	test_fifo();
+	test_nested_fifo();
+	test_sync_and_barrier();
+	test_semaphore();
+	test_group();
+	test_timers();
+	test_apply();
+	test_data();
+	test_stop();
+	return 0;
 }

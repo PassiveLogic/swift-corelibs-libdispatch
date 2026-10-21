@@ -18,15 +18,27 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
+/*
+ * dispatch_main() runs main-queue work scheduled with dispatch_after: the
+ * timer fires on the sole WASI thread and its block runs on the main queue,
+ * where it stops the test. Without that work dispatch_main() would crash
+ * idle (see dispatch-main-idle.c).
+ */
 #include <dispatch/dispatch.h>
-#include <stdio.h>
+
+#include <bsdtests.h>
+#include "dispatch_test.h"
 
 int
 main(void)
 {
-	// dispatch_main() runs the 20 ms timer block. Then no work and no timer
-	// remain, so dispatch_main() crashes with its named diagnostic.
+	dispatch_test_start("Dispatch WASI Main Queue Work");
+
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 20 * NSEC_PER_MSEC),
-			dispatch_get_main_queue(), ^{ puts("main queue work OK"); });
+			dispatch_get_main_queue(), ^{
+		dispatch_test_current("dispatch_after work runs on the main "
+				"queue", dispatch_get_main_queue());
+		test_stop();
+	});
 	dispatch_main();
 }

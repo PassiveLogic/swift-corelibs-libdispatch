@@ -7,7 +7,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -19,20 +19,20 @@
  */
 
 /*
- * A HIGH root queue that refills itself must not starve a LOW root item. The
+ * A self-replenishing HIGH root queue must not starve a LOW root item: the
  * drain rotates among pending roots, so the LOW item runs partway through
- * the HIGH chain. dispatch_main() pumps the work. The last HIGH item checks
- * the result and exits.
+ * the HIGH chain. Pumped by dispatch_main(); the last HIGH item checks and
+ * stops the test.
  */
 #include <dispatch/dispatch.h>
-#include <stdio.h>
-#include <stdlib.h>
 
-// the length of the HIGH chain
+#include <bsdtests.h>
+#include "dispatch_test.h"
+
 #define HIGH_WORK_COUNT 100
 
-static int high_count;
-static int low_seen_after = -1;
+static long high_count;
+static long low_seen_after = -1;
 
 static void
 default_work(void *context)
@@ -47,19 +47,18 @@ high_work(void *context)
 	high_count++;
 	if (high_count < HIGH_WORK_COUNT) {
 		dispatch_async_f(dispatch_get_global_queue(
-				DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), NULL, default_work);
+				DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), NULL,
+				default_work);
 		dispatch_async_f(queue, queue, high_work);
 		return;
 	}
-	// the HIGH chain is done. The LOW item must have run in the middle of
-	// it, not after it.
-	if (low_seen_after <= 0 || low_seen_after >= HIGH_WORK_COUNT) {
-		printf("FAIL: high_count=%d low_seen_after=%d\n", high_count,
-				low_seen_after);
-		exit(1);
-	}
-	puts("root fairness OK");
-	exit(0);
+	// the self-replenishing HIGH chain is done: the LOW item must have run
+	// somewhere in the middle of it, not after it
+	test_long_greater_than_or_equal("LOW item runs after the HIGH chain "
+			"starts", low_seen_after, 1);
+	test_long_less_than("LOW item runs before the HIGH chain ends",
+			low_seen_after, HIGH_WORK_COUNT);
+	test_stop();
 }
 
 static void
@@ -84,6 +83,8 @@ seed_work(void *context)
 int
 main(void)
 {
+	dispatch_test_start("Dispatch WASI Root Fairness");
+
 	dispatch_async_f(dispatch_get_global_queue(
 			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), NULL, seed_work);
 	dispatch_main();

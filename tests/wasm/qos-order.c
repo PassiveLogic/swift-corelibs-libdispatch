@@ -19,48 +19,39 @@
  */
 
 /*
- * Root queues drain the highest QoS first. A HIGH item submitted after a LOW
- * item still runs before it. The LOW item runs last and exits from inside
- * dispatch_main().
+ * Root queues drain highest QoS first: a HIGH item submitted after a LOW
+ * item still runs before it. The LOW item runs last and stops the test from
+ * inside dispatch_main().
  */
 #include <dispatch/dispatch.h>
-#include <stdio.h>
-#include <stdlib.h>
 
-#define STEP_COUNT 2
+#include <bsdtests.h>
+#include "dispatch_test.h"
 
-static int count;
-static int order[STEP_COUNT];
-
-// Records one step. The bounds check stops an extra step from writing past
-// the end of order.
-static void
-record(int step)
-{
-	if (count >= STEP_COUNT) {
-		printf("FAIL: more than %d steps\n", STEP_COUNT);
-		exit(1);
-	}
-	order[count++] = step;
-}
+static long count;
+static long order[2];
 
 int
 main(void)
 {
-	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_LOW, 0), ^{
-			record(1);
-			if (count != STEP_COUNT || order[0] != 2 || order[1] != 1) {
-				printf("FAIL: count=%d order=%d,%d\n", count, order[0],
-						order[1]);
-				exit(1);
-			}
-			puts("qos order OK");
-			exit(0);
+	dispatch_test_start("Dispatch WASI QoS Order");
+
+	dispatch_queue_t global = dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+	dispatch_queue_t low = dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_LOW, 0);
+	dispatch_queue_t high = dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_HIGH, 0);
+	dispatch_async(global, ^{
+		dispatch_async(low, ^{
+			order[count++] = 1;
+			test_long("both root queue items run", count, 2);
+			test_long("HIGH item runs first", order[0], 2);
+			test_long("LOW item runs after the HIGH item",
+					order[1], 1);
+			test_stop();
 		});
-		dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-			record(2);
-		});
+		dispatch_async(high, ^{ order[count++] = 2; });
 	});
 	dispatch_main();
 }

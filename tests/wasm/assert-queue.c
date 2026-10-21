@@ -19,35 +19,39 @@
  */
 
 /*
- * dispatch_assert_queue must find the correct queue owner on the sole WASI
- * thread. After DLOCK_OWNER_MASK, the thread id must stay different from
- * DLOCK_OWNER_NULL (see _dispatch_tid_self in src/shims/lock.h). If the
- * masked id is zero, every unlocked queue looks owned by the current thread.
- * Then dispatch_assert_queue passes off-queue, and dispatch_assert_queue_not
- * traps on a correct call.
+ * dispatch_assert_queue correctness. The lock-owner encoding must keep the
+ * sole thread's tid distinct from DLOCK_OWNER_NULL after DLOCK_OWNER_MASK
+ * (see _dispatch_tid_self in shims/lock.h); if the tid masks to zero, every
+ * unlocked queue looks owned by the current thread, dispatch_assert_queue
+ * silently passes off-queue, and dispatch_assert_queue_not traps spuriously.
  *
- * The test checks two cases:
- *  - on-queue: dispatch_assert_queue passes, and dispatch_assert_queue_not
- *    passes for a different queue
- *  - off-queue: dispatch_assert_queue traps with the standard diagnostic
+ * Expected behavior verified here:
+ *  - inside a block on the queue: dispatch_assert_queue(queue) passes and
+ *    dispatch_assert_queue_not(other) passes
+ *  - outside the queue: dispatch_assert_queue(queue) crashes with "Block was
+ *    expected to execute on queue"
+ *
+ * The marker "on-queue assertions passed" is printed between the two parts,
+ * so a spurious crash in the on-queue part cannot pass the test. If the
+ * off-queue assertion returns, main returns 1 without the diagnostic, and
+ * the crash test fails.
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
 
-int main(void)
+int
+main(void)
 {
-	dispatch_queue_t serial = dispatch_queue_create("v2.assertq",
+	dispatch_queue_t queue = dispatch_queue_create("wasi.assert_queue",
 			DISPATCH_QUEUE_SERIAL);
-	dispatch_queue_t other = dispatch_queue_create("v2.assertq.other",
-			DISPATCH_QUEUE_SERIAL);
-	dispatch_sync(serial, ^{
-		dispatch_assert_queue(serial);
+	dispatch_queue_t other = dispatch_queue_create(
+			"wasi.assert_queue.other", DISPATCH_QUEUE_SERIAL);
+	dispatch_sync(queue, ^{
+		dispatch_assert_queue(queue);
 		dispatch_assert_queue_not(other);
 	});
-	printf("assert on-queue OK\n");
+	puts("on-queue assertions passed");
 	fflush(stdout);
-	// Not on this queue: must trap, never pass silently.
-	dispatch_assert_queue(serial);
-	printf("FAIL: off-queue dispatch_assert_queue did not trap\n");
+	dispatch_assert_queue(queue);
 	return 1;
 }

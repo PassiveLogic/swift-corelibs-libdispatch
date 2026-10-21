@@ -91,15 +91,18 @@ async function runGuest(binary, inlineSchedule) {
   const completed = waitForResult(200);
   const resultAtReturn = instance.exports.host_event_loop_submit();
   if (resultAtReturn !== 0) {
-    throw new Error(`Dispatch ran before submission returned: ${resultAtReturn}`);
+    throw new Error(
+        `Dispatch ran before submission returned: ${resultAtReturn}`);
   }
   if (scheduledTurns !== 1) {
-    throw new Error(`initial submissions scheduled ${scheduledTurns} host turns`);
+    throw new Error(
+        `initial submissions scheduled ${scheduledTurns} host turns`);
   }
 
   await waitWithTimeout(completed);
   if (instance.exports.host_event_loop_result() !== 200) {
-    throw new Error(`unexpected first result: ${instance.exports.host_event_loop_result()}`);
+    throw new Error(`unexpected first result: ` +
+        `${instance.exports.host_event_loop_result()}`);
   }
 
   const turnsBeforeSecondBurst = scheduledTurns;
@@ -109,7 +112,8 @@ async function runGuest(binary, inlineSchedule) {
   }
   await new Promise(resolve => setImmediate(resolve));
   if (instance.exports.host_event_loop_result() !== 201) {
-    throw new Error(`unexpected final result: ${instance.exports.host_event_loop_result()}`);
+    throw new Error(`unexpected final result: ` +
+        `${instance.exports.host_event_loop_result()}`);
   }
 
   const turnsBeforeTimerOnly = scheduledTurns;
@@ -117,7 +121,8 @@ async function runGuest(binary, inlineSchedule) {
   const timerOnlyCompleted = waitForResult(211);
   const timerAtReturn = instance.exports.host_event_loop_submit_timer_only();
   if (timerAtReturn !== 0 || scheduledTurns !== turnsBeforeTimerOnly + 1) {
-    throw new Error('timer-only submission did not schedule one later host turn');
+    throw new Error(
+        'timer-only submission did not schedule one later host turn');
   }
   await waitWithTimeout(timerOnlyCompleted);
   if (hostTimerCallbacks !== timerCallbacksBeforeTimerOnly + 1) {
@@ -190,7 +195,8 @@ async function runLateRegistrationGuest(binary) {
     moreWork = instance.exports.host_event_loop_perform() !== 0;
   }
   if (instance.exports.host_event_loop_result() !== 200) {
-    throw new Error(`late registration result ${instance.exports.host_event_loop_result()}`);
+    throw new Error(`late registration result ` +
+        `${instance.exports.host_event_loop_result()}`);
   }
   console.log('late registration handed pending work to the host');
 }
@@ -210,10 +216,12 @@ async function runRegisterInDrainGuest(binary) {
   const atRegistration =
       instance.exports.host_event_loop_schedule_calls_at_registration();
   if (atRegistration !== 0) {
-    throw new Error(`registration inside the drain requested ${atRegistration} turns itself`);
+    throw new Error(`registration inside the drain requested ` +
+        `${atRegistration} turns itself`);
   }
   if (scheduledTurns !== 1) {
-    throw new Error(`registration in a drain scheduled ${scheduledTurns} turns`);
+    throw new Error(
+        `registration in a drain scheduled ${scheduledTurns} turns`);
   }
   const moreWork = instance.exports.host_event_loop_perform() !== 0;
   if (moreWork || scheduledTurns !== 1) {
@@ -246,7 +254,8 @@ async function runTimerRaceGuest(binary) {
     throw new Error('timer perform did not report retained work');
   }
   if (scheduledTurns !== 1) {
-    throw new Error(`timer perform duplicated scheduled turn: ${scheduledTurns}`);
+    throw new Error(
+        `timer perform duplicated scheduled turn: ${scheduledTurns}`);
   }
   console.log('timer perform preserved scheduled turn');
 }
@@ -281,7 +290,8 @@ async function runSerialLaneGuest(binary) {
   const lowSeenAt = e.host_event_loop_serial_lane_low_seen_at();
   if (e.host_event_loop_serial_lane_count() !== 100 || lowSeenAt < 0 ||
       lowSeenAt >= 100) {
-    throw new Error(`serial lane count=${e.host_event_loop_serial_lane_count()} ` +
+    throw new Error(
+        `serial lane count=${e.host_event_loop_serial_lane_count()} ` +
         `low item ran at ${lowSeenAt}`);
   }
   console.log(`serial lane advanced one item per step calls=${calls}`);
@@ -293,7 +303,7 @@ if (!modeOrBinary) {
   process.exitCode = 2;
 } else if (modeOrBinary === '--inline-check') {
   await checkRejected(maybeBinary, '--inline-guest',
-      'WASI event loop scheduler invoked perform inline',
+      'Perform called from the scheduler',
       'inline host callback rejected');
 } else if (modeOrBinary === '--inline-guest') {
   await runGuest(maybeBinary, true);

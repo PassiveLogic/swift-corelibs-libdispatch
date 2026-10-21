@@ -18,14 +18,15 @@
  * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
+/*
+ * dispatch_main() with no work, no timers, and no sources can never make
+ * progress on the sole WASI thread. It must crash with a named diagnostic
+ * instead of parking forever.
+ */
 #include <dispatch/dispatch.h>
-#include <stdio.h>
 
 int
 main(void)
 {
-	puts("dispatch_main idle entry");
-	// no work and no timer exist, so dispatch_main() crashes with its named
-	// diagnostic
 	dispatch_main();
 }

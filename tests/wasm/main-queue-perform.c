@@ -26,15 +26,14 @@
  * not mark the main queue as pending.
  */
 #include <dispatch/dispatch.h>
-#define __DISPATCH_BUILDING_DISPATCH__ 1
-#include <private/private.h>
-#undef __DISPATCH_BUILDING_DISPATCH__
+#include <dispatch/private.h>
 #include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
 
-static int turns;
-static int ran;
+#include <bsdtests.h>
+#include "dispatch_test.h"
+
+static long turns;
+static long ran;
 
 static void
 count_turn(void *context)
@@ -60,21 +59,11 @@ run_and_requeue_once(void *context)
 	}
 }
 
-static void
-expect(const char *step, bool more, bool want_more, int want_turns,
-		int want_ran)
-{
-	printf("%s: more=%d turns=%d ran=%d\n", step, more, turns, ran);
-	if (more != want_more || turns != want_turns || ran != want_ran) {
-		printf("FAIL: %s: want more=%d turns=%d ran=%d\n", step,
-				want_more, want_turns, want_ran);
-		exit(1);
-	}
-}
-
 int
 main(void)
 {
+	dispatch_test_start("Dispatch WASI Main Queue Perform");
+
 	// Run the turn that registration requested, if any, so each case starts
 	// with no pending work. 64 steps is more than the startup work needs.
 	_dispatch_wasi_event_loop_set_scheduler(count_turn, NULL);
@@ -85,19 +74,28 @@ main(void)
 	// step runs the block, and no work remains.
 	turns = ran = 0;
 	dispatch_async_f(dispatch_get_main_queue(), NULL, run_once);
-	expect("one block", _dispatch_wasi_event_loop_perform(1, true),
-			false, 1, 1);
+	bool more = _dispatch_wasi_event_loop_perform(1, true);
+	test_long("one main block: perform with a one-step budget reports no "
+			"more work", more, 0);
+	test_long("one main block: the push requests one host turn", turns, 1);
+	test_long("one main block: the step runs the block", ran, 1);
 
 	// A main block that adds one more main block. The first perform has
 	// real work left and requests one more turn. The second perform runs
 	// the added block and reports no more work.
 	turns = ran = 0;
 	dispatch_async_f(dispatch_get_main_queue(), NULL, run_and_requeue_once);
-	expect("requeue first", _dispatch_wasi_event_loop_perform(1, true),
-			true, 2, 1);
-	expect("requeue second", _dispatch_wasi_event_loop_perform(1, true),
-			false, 2, 2);
+	more = _dispatch_wasi_event_loop_perform(1, true);
+	test_long("requeue: the first perform reports more work", more, 1);
+	test_long("requeue: the added block requests a second host turn",
+			turns, 2);
+	test_long("requeue: the first perform runs the first block", ran, 1);
+	more = _dispatch_wasi_event_loop_perform(1, true);
+	test_long("requeue: the second perform reports no more work", more, 0);
+	test_long("requeue: the second perform requests no further host turn",
+			turns, 2);
+	test_long("requeue: the second perform runs the added block", ran, 2);
 
-	printf("main queue perform OK\n");
+	test_stop();
 	return 0;
 }

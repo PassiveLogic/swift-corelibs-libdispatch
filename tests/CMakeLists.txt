@@ -11,7 +11,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
       "WASI test runner '${_wasi_test_runner_program}' not found; "
       "WASI unit tests will be registered but disabled")
   endif()
-  add_subdirectory(wasm)
 endif()
 
 if(WIN32)
@@ -283,3 +282,9 @@ endif()
 
 # test-specific compile options
 set_target_properties(dispatch_c99 PROPERTIES C_STANDARD 99)
+
+# The focused WASI tests reuse bsdtests and add_unit_test, so they are added
+# after both are defined.
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  add_subdirectory(wasm)
+endif()

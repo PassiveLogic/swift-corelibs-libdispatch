@@ -75,11 +75,14 @@ endif()
 # which has no wasm32 build. So C and C++ executables drop the default
 # libraries and link libc and the WASI builtins archive instead. This applies
 # to every executable that uses this toolchain, not only the tests. Swift
-# links do not use these settings.
-set(CMAKE_C_STANDARD_LIBRARIES_INIT
-  "-nodefaultlibs -lc \"${DISPATCH_WASI_BUILTINS}\"")
-set(CMAKE_CXX_STANDARD_LIBRARIES_INIT
-  "-nodefaultlibs -lc++ -lc++abi -lc \"${DISPATCH_WASI_BUILTINS}\"")
+# links do not use these settings. The values are forced into the cache, so a
+# reconfigure with another SDK or builtins archive takes effect.
+set(CMAKE_C_STANDARD_LIBRARIES
+  "-nodefaultlibs -lc \"${DISPATCH_WASI_BUILTINS}\""
+  CACHE STRING "Libraries linked by default with all C applications" FORCE)
+set(CMAKE_CXX_STANDARD_LIBRARIES
+  "-nodefaultlibs -lc++ -lc++abi -lc \"${DISPATCH_WASI_BUILTINS}\""
+  CACHE STRING "Libraries linked by default with all C++ applications" FORCE)
 # Only the Swift overlay and its consumers use the Swift static resources
 # and the Swift clang resource dir. A C-only build must not require them,
 # because a trimmed or non-Swift SDK layout can omit them.

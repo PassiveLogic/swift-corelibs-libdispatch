@@ -19,49 +19,44 @@
  */
 
 /*
- * A barrier between two concurrent-queue items keeps them in order. The
- * final barrier checks all three items, then exits from inside
- * dispatch_main().
+ * A barrier submitted between two concurrent-queue items orders them: the
+ * final barrier observes all three in submission order, then stops the test
+ * from inside dispatch_main().
  */
 #include <dispatch/dispatch.h>
-#include <stdio.h>
-#include <stdlib.h>
 
-#define STEP_COUNT 3
+#include <bsdtests.h>
+#include "dispatch_test.h"
 
-static int count;
-static int order[STEP_COUNT];
-
-// Records one step. The bounds check stops an extra step from writing past
-// the end of order.
-static void
-record(int step)
-{
-	if (count >= STEP_COUNT) {
-		printf("FAIL: more than %d steps\n", STEP_COUNT);
-		exit(1);
-	}
-	order[count++] = step;
-}
+static long count;
+static long order[3];
 
 int
 main(void)
 {
+	dispatch_test_start("Dispatch WASI Barrier Order");
+
 	dispatch_queue_t queue = dispatch_queue_create("wasi.barrier",
 			DISPATCH_QUEUE_CONCURRENT);
-	dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-		dispatch_async(queue, ^{ record(1); });
-		dispatch_barrier_async(queue, ^{ record(2); });
-		dispatch_async(queue, ^{ record(3); });
+	dispatch_queue_t global = dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
+	dispatch_async(global, ^{
+		dispatch_async(queue, ^{ order[count++] = 1; });
+		dispatch_barrier_async(queue, ^{ order[count++] = 2; });
+		dispatch_async(queue, ^{ order[count++] = 3; });
 		dispatch_barrier_async(queue, ^{
-			if (count != STEP_COUNT || order[0] != 1 || order[1] != 2 ||
-					order[2] != 3) {
-				printf("FAIL: count=%d order=%d,%d,%d\n", count, order[0],
-						order[1], order[2]);
-				exit(1);
-			}
-			puts("barrier order OK");
-			exit(0);
+			test_long("final barrier runs after all three items",
+					count, 3);
+			test_long("item submitted first runs first",
+					order[0], 1);
+			test_long("barrier runs after the item submitted "
+					"before it", order[1], 2);
+			test_long("item submitted after the barrier runs "
+					"after it", order[2], 3);
+			// the system keeps the queue alive until this
+			// block returns
+			dispatch_release(queue);
+			test_stop();
 		});
 	});
 	dispatch_main();

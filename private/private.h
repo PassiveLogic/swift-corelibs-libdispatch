@@ -160,35 +160,12 @@ void _dispatch_prohibit_transition_to_multithreaded(bool prohibit);
 
 #if defined(__wasi__)
 /*
- * Single-threaded WASI has no worker threads. Queued work runs only when the
- * sole thread drains it. A program drains work in one of two ways.
- *
- * A command module calls dispatch_main(). It drains all queues, then waits
- * in the host until the next armed timer or pollable fd source. When no work,
- * no armed timer, and no pollable fd source remain, it crashes with a named
- * diagnostic. As on every platform, dispatch_main()
- * never returns. To end, call exit() from the last block. exit() runs the
- * atexit handlers inside that block, so an indefinite Dispatch wait in a
- * handler crashes. Finish any Dispatch wait, such as a flush, before exit().
- *
- * A host that runs its own event loop uses the SPI below. Dispatch calls the
- * scheduler when it records new work. The scheduler must arrange a later call
- * to _dispatch_wasi_event_loop_perform() and return without running Dispatch.
- * A perform call, a blocking Dispatch wait, or dispatch_main() inside the
- * callback crashes with a named diagnostic.
- *
- * Register once. A second registration crashes. At registration, Dispatch
- * hands earlier work, including an armed timer, to the scheduler. The
- * callback and context must stay valid for the life of the process.
- *
- * Dispatch does not call the scheduler when a timer becomes due, because no
- * Dispatch code runs at that time. The host owns that wakeup:
- * - After registration and after each perform call, call
- *   _dispatch_wasi_event_loop_next_timer_delay().
- * - For -1, cancel the host timeout. For 0 or more, replace the host timeout
- *   with one that fires after that many nanoseconds.
- * - When the host timeout fires, call _dispatch_wasi_event_loop_perform()
- *   with consumes_scheduled_turn set to false.
+ * SPI for single-threaded hosts that drive Dispatch from their own event loop.
+ * The scheduler must arrange a later call to
+ * _dispatch_wasi_event_loop_perform() and return without running Dispatch.
+ * Register once. Work recorded before registration is handed to the
+ * scheduler at registration. The callback and context must remain valid for
+ * the lifetime of the process.
  */
 typedef void (*dispatch_wasi_event_loop_schedule_t)(void *_Nullable context);
 
@@ -198,37 +175,16 @@ void _dispatch_wasi_event_loop_set_scheduler(
 		void *_Nullable context);
 
 /*
- * Runs at most max_steps drain steps. Returns true when more work remains.
- * A scheduler call for that work is then already outstanding. Returns false
- * when no work can run now. A timer can still be armed.
- *
- * Each scheduler call requests one host turn. Dispatch makes no other
- * scheduler call until a perform call consumes that turn. In each requested
- * turn, pass consumes_scheduled_turn as true on exactly one perform call.
- * Pass false on all other calls, for example from a host timeout, from an
- * export, or a second call in the same turn. If no call in a requested turn
- * passes true, Dispatch never calls the scheduler again.
- *
- * Each step runs one phase. A manager or main-queue phase drains the items
- * that were queued when it started. A root-queue phase runs one work item.
- * If that item is a queue, the phase runs one item of that queue and puts the
- * queue back. A serial queue in a main-queue phase also runs one item.
- *
- * Call perform only from the host event loop, never from a Dispatch block.
- * These calls crash with a named diagnostic:
- * - a call before a scheduler is registered
- * - a call with max_steps set to 0
- * - a call from inside the scheduler callback
- * - a call from a work item that a Dispatch drain runs
+ * Runs at most max_steps drain phases. A manager or main-queue phase may drain
+ * a captured queue snapshot. consumes_scheduled_turn must be true only when
+ * the registered scheduler's callback caused this call. A true result means
+ * more work remains and a scheduler callback is already outstanding.
  */
 DISPATCH_EXPORT DISPATCH_WARN_RESULT DISPATCH_NOTHROW
 bool _dispatch_wasi_event_loop_perform(unsigned long max_steps,
 		bool consumes_scheduled_turn);
 
-/*
- * Returns -1 when no timer is armed, 0 when a timer is due, or else the delay
- * in nanoseconds until the next timer is due.
- */
+/* Returns -1 with no armed timer, 0 when due, or a relative nanosecond delay. */
 DISPATCH_EXPORT DISPATCH_WARN_RESULT DISPATCH_NOTHROW
 int64_t _dispatch_wasi_event_loop_next_timer_delay(void);
 #endif

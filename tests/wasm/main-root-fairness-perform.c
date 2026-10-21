@@ -7,7 +7,7 @@
  * you may not use this file except in compliance with the License.
  * You may obtain a copy of the License at
  *
- * http://www.apache.org/licenses/LICENSE-2.0
+ *     http://www.apache.org/licenses/LICENSE-2.0
  *
  * Unless required by applicable law or agreed to in writing, software
  * distributed under the License is distributed on an "AS IS" BASIS,
@@ -26,20 +26,18 @@
  * with _dispatch_wasi_event_loop_perform(1, true).
  */
 #include <dispatch/dispatch.h>
-#define __DISPATCH_BUILDING_DISPATCH__ 1
-#include <private/private.h>
-#undef __DISPATCH_BUILDING_DISPATCH__
+#include <dispatch/private.h>
 #include <stdbool.h>
-#include <stdio.h>
-#include <stdlib.h>
+
+#include <bsdtests.h>
+#include "dispatch_test.h"
 
 // The test fails after this many host turns. A fair drain runs the root
 // item within a few turns.
 #define MAX_TURNS 1000
 
 static bool turn_requested;
-static int ticks;
-static int global_ran;
+static long global_ran;
 
 static void
 schedule_host_turn(void *context)
@@ -59,7 +57,6 @@ static void
 tick(void *context)
 {
 	(void)context;
-	ticks++;
 	if (!global_ran) {
 		dispatch_async_f(dispatch_get_main_queue(), NULL, tick);
 	}
@@ -68,25 +65,23 @@ tick(void *context)
 int
 main(void)
 {
+	dispatch_test_start("Dispatch WASI Main Root Fairness Perform");
+
+	dispatch_queue_t global = dispatch_get_global_queue(
+			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
 	_dispatch_wasi_event_loop_set_scheduler(schedule_host_turn, NULL);
-	dispatch_async_f(dispatch_get_global_queue(
-			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), NULL, set_global_ran);
+	dispatch_async_f(global, NULL, set_global_ran);
 	dispatch_async_f(dispatch_get_main_queue(), NULL, tick);
-	int turns = 0;
-	while (turn_requested) {
-		if (++turns > MAX_TURNS) {
-			printf("FAIL: root item starved: %d host turns, %d main ticks\n",
-					turns - 1, ticks);
-			return 1;
-		}
+	// serve each requested turn, at most MAX_TURNS of them
+	long turns = 0;
+	while (turn_requested && ++turns <= MAX_TURNS) {
 		turn_requested = false;
 		(void)_dispatch_wasi_event_loop_perform(1, true);
 	}
-	if (!global_ran) {
-		printf("FAIL: host loop went idle before the root item ran\n");
-		return 1;
-	}
-	printf("host turns %d, main ticks %d\n", turns, ticks);
-	printf("main root fairness perform OK\n");
+	test_long_less_than_or_equal("host loop runs the root item within "
+			"1000 turns", turns, MAX_TURNS);
+	test_long("root item runs before the host loop goes idle", global_ran,
+			1);
+	test_stop();
 	return 0;
 }

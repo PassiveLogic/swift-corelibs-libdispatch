@@ -285,9 +285,8 @@ static void
 _dispatch_force_cache_cleanup(void)
 {
 #if defined(__wasi__)
-	// Nothing to do on WASI. This cleanup is for threads that are not
-	// workers. The sole WASI thread is the worker for every root queue, so
-	// it keeps its continuation cache.
+	// The sole WASI thread is the worker for every root queue, so it keeps its
+	// continuation cache.
 #else
 	dispatch_continuation_t dc;
 	dc = _dispatch_thread_getspecific(dispatch_cache_key);
@@ -3570,25 +3569,18 @@ _dispatch_queue_drain_should_narrow(dispatch_invoke_context_t dic)
 	return false;
 }
 #elif defined(__wasi__)
-// The sole WASI thread must not stay in one lane drain. A lane that refills
-// itself would starve timers, the manager queue, the main queue, other
-// roots, a blocking wait, and the host loop. WASI has no workqueue to
-// narrow, but it uses the narrowing exit for these rules:
-// - A root step starts narrowed. A lane runs one item. If more items
-//   remain, the lane takes the narrowing exit and goes back on its target.
-// - A main-queue step narrows a lane in its snapshot the same way. The lane
-//   goes to the back of the main queue.
-// - Items queued directly on the main queue run as one snapshot.
-// - The manager drain never narrows.
-// - dispatch_with_disabled_narrowing() turns narrowing off for the items of
-//   a source.
-bool _dispatch_wasi_main_step_narrowing;
+// WASI has no workqueue to narrow, but the sole thread must not stay in one
+// lane drain, so a lane runs one item and then goes back on its target queue.
+// A root step starts narrowed. In a main-queue step, the shared main drain
+// is the parent frame of the lane. Manager drains and
+// dispatch_with_disabled_narrowing() do not narrow.
 #define _dispatch_queue_drain_init_narrowing_check_deadline(dic, pri) \
 		((void)(pri), \
 		(dic)->dic_next_narrow_check = DISPATCH_THREAD_IS_NARROWING)
 #define _dispatch_queue_drain_should_narrow(dic) \
-		((dic)->dic_next_narrow_check != 0 || \
-		_dispatch_wasi_main_step_narrowing)
+		((dic)->dic_next_narrow_check == DISPATCH_THREAD_IS_NARROWING || \
+		((dic)->dic_next_narrow_check == 0 && \
+		_dispatch_thread_frame_find_queue(_dispatch_main_q._as_dq)))
 #else
 #define _dispatch_queue_drain_init_narrowing_check_deadline(rq, dic) ((void)0)
 #define _dispatch_queue_drain_should_narrow(dic)  false
@@ -4312,6 +4304,13 @@ _dispatch_workloop_invoke2(dispatch_workloop_t dwl,
 
 			_dispatch_continuation_pop_inline(dc, dic, flags, dwl);
 			qos = dwl->dwl_drained_qos;
+#if defined(__wasi__)
+			// Like a lane drain, a workloop runs one item per turn, then goes back on
+			// its target queue.
+			if (unlikely(_dispatch_queue_drain_should_narrow(dic))) {
+				goto out_narrowed;
+			}
+#endif
 		} while ((dc = next_dc) && (_dispatch_queue_max_qos(dwl) <= qos));
 	}
 
@@ -4319,6 +4318,16 @@ _dispatch_workloop_invoke2(dispatch_workloop_t dwl,
 			DISPATCH_QUEUE_IN_BARRIER + DISPATCH_QUEUE_WIDTH_INTERVAL;
 	_dispatch_thread_frame_pop(&dtf);
 	return NULL;
+
+#if defined(__wasi__)
+out_narrowed:
+	// Unlock as the normal exit does. Returning the target queue makes
+	// _dispatch_queue_invoke_finish queue the workloop again.
+	*owned = (*owned & DISPATCH_QUEUE_ENQUEUED) +
+			DISPATCH_QUEUE_IN_BARRIER + DISPATCH_QUEUE_WIDTH_INTERVAL;
+	_dispatch_thread_frame_pop(&dtf);
+	return dwl->do_targetq;
+#endif
 
 out_with_barrier_waiter:
 	_dispatch_thread_frame_pop(&dtf);
@@ -5436,13 +5445,9 @@ DISPATCH_NOINLINE
 void
 _dispatch_wasi_mgr_queue_drain(void)
 {
-	// WASI has no manager thread, so drain the manager queue inline. This
-	// follows the kevent workqueue manager drain (see
-	// _dispatch_wlh_worker_thread_init/_reset). Save and restore the current
-	// queue, because the sole thread is not a pristine worker. The thread
-	// keeps its continuation cache, as in that drain. The
-	// _dispatch_force_cache_cleanup() call in _dispatch_mgr_queue_drain does
-	// nothing on WASI.
+	// No manager thread: drain the manager queue inline, as the kevent workqueue
+	// manager drain does. Restore the current queue, because the sole thread is
+	// not a pristine worker.
 	dispatch_queue_t old_dq = _dispatch_queue_get_current();
 	_dispatch_queue_set_current(&_dispatch_mgr_q);
 	_dispatch_queue_mgr_lock(&_dispatch_mgr_q);
@@ -5766,16 +5771,10 @@ static void
 _dispatch_root_queue_poke_slow(dispatch_queue_global_t dq, int n, int floor)
 {
 #if defined(__wasi__)
-	// The 0 -> 1 cmpxchg below must be the only dgq_pending increment on
-	// this path. Thus the fast-path cmpxchg in _dispatch_root_queue_poke()
-	// must not compile in (it needs !DISPATCH_USE_INTERNAL_WORKQUEUE).
-	// Otherwise each poke raises dgq_pending twice, and it never returns to 0.
-	//
-	// WASI has no thread to create. Record one pending "worker" in
-	// dgq_pending, and note the queue for the cooperative drain. The next
-	// blocking wait, dispatch_main() pass, or host turn runs it. The
-	// matching decrement is in _dispatch_wasi_root_queue_drain(), as in
-	// _dispatch_worker_thread2.
+	// No thread to create: count one pending worker and note the queue for the
+	// drain. _dispatch_wasi_root_queue_drain() undoes the count, as
+	// _dispatch_worker_thread2 does. This cmpxchg must be the only increment, so
+	// the fast path in _dispatch_root_queue_poke() must not compile in.
 #if !DISPATCH_USE_INTERNAL_WORKQUEUE
 #error the WASI cooperative drain requires DISPATCH_USE_INTERNAL_WORKQUEUE
 #endif
@@ -6249,16 +6248,10 @@ DISPATCH_NOINLINE
 void
 _dispatch_wasi_root_queue_drain(dispatch_queue_global_t dq)
 {
-	// One worker turn, as _dispatch_worker_thread2 runs it. The turn runs
-	// as a worker: the worker lock owner id and an empty frame chain.
-	// Otherwise an item that a top-level wait runs would inherit the queues
-	// and once gates of the interrupted frame and of the main queue.
-	// _dispatch_main_queue_drain hides the frames of the code that a
-	// CFRunLoop drain interrupts in the same way.
-	//
-	// The WASI narrowing check limits the drain to one root item, so
-	// event_wasi.c can rotate among pending roots. A lane item runs one of
-	// its own items and re-enqueues itself if more remain.
+	// One worker turn, as _dispatch_worker_thread2 runs it, with the worker lock
+	// owner id and an empty frame chain. So a pumped item does not inherit the
+	// queues and once gates of the interrupted frame. The narrowing check limits
+	// the turn to one root item.
 	struct dispatch_tsd *tsd = _dispatch_get_tsd_base();
 	pid_t old_tid = tsd->tid;
 	dispatch_thread_frame_s dtf;
@@ -7069,6 +7062,13 @@ _dispatch_main_queue_drain(dispatch_queue_main_t dq)
 	_dispatch_perfmon_end_notrace();
 }
 #endif // DISPATCH_COCOA_COMPAT || defined(__wasi__)
+#if defined(__wasi__)
+void
+_dispatch_wasi_main_queue_drain(void)
+{
+	_dispatch_main_queue_drain(&_dispatch_main_q);
+}
+#endif // defined(__wasi__)
 #if DISPATCH_COCOA_COMPAT
 
 static bool
@@ -7239,23 +7239,6 @@ _dispatch_main_queue_push(dispatch_queue_main_t dq, dispatch_object_t dou,
 	}
 }
 
-#if defined(__wasi__)
-void
-_dispatch_wasi_main_queue_drain(void)
-{
-	// A serial queue that targets the main queue runs one item per step
-	// (see the WASI narrowing arm). This uses the shared
-	// _dispatch_main_queue_drain above. Its DISPATCH_COCOA_COMPAT steps for
-	// the runloop handle and the thread QoS override do not apply. WASI has
-	// no runloop handle. Without HAVE_PTHREAD_WORKQUEUE_QOS, both sides of
-	// the QoS check are always 0. Its final _dispatch_force_cache_cleanup()
-	// does nothing on WASI.
-	_dispatch_wasi_main_step_narrowing = true;
-	_dispatch_main_queue_drain(&_dispatch_main_q);
-	_dispatch_wasi_main_step_narrowing = false;
-}
-#endif // defined(__wasi__)
-
 void
 _dispatch_main_queue_wakeup(dispatch_queue_main_t dq, dispatch_qos_t qos,
 		dispatch_wakeup_flags_t flags)
@@ -7264,14 +7247,11 @@ _dispatch_main_queue_wakeup(dispatch_queue_main_t dq, dispatch_qos_t qos,
 	if (_dispatch_queue_is_thread_bound(dq)) {
 		return _dispatch_runloop_queue_wakeup(dq->_as_dl, qos, flags);
 	}
-#endif
-#if defined(__wasi__)
+#elif defined(__wasi__)
 	if (_dispatch_queue_is_thread_bound(dq)) {
-		// Only the cooperative drain runs the thread-bound main queue on
-		// WASI. The lane wakeup updates dq_state first. Then the poke notes
-		// the queue for the drain. Poke only when items are queued, as
-		// _dispatch_runloop_queue_wakeup does. The main queue drain ends
-		// with a wakeup that adds no item.
+		// The cooperative drain runs the thread-bound main queue. Update
+		// dq_state first. Then note the queue for the drain if it has items,
+		// as _dispatch_runloop_queue_wakeup does.
 		_dispatch_lane_wakeup(dq, qos, flags);
 		if (_dispatch_queue_class_probe(dq)) {
 			_dispatch_wasi_main_queue_poke();
@@ -7316,28 +7296,17 @@ dispatch_main(void)
 {
 	_dispatch_root_queues_init();
 #if defined(__wasi__)
-	// WASI cannot park the main thread while other threads do the work.
-	// Thus dispatch_main() is the drain loop, and it never returns.
-	// When idle, it waits in the host for a timer, fd readiness, or a raised
-	// emulated signal. With none of those it crashes, because a wait would
-	// hang forever.
-	//
-	// A program ends with exit() from a work item. exit() runs atexit
-	// handlers and static destructors inside that drained item. A Dispatch
-	// wait there is a nested wait (see _dispatch_wasi_in_drain() in
-	// shims/lock.h). An indefinite wait crashes. A timed wait times out
-	// without running queued work. Flush work before exit, for example by
-	// calling exit(0) from a dispatch_group_notify block.
+	// WASI cannot park the main thread, so dispatch_main() is the drain loop. It
+	// never returns. A program ends with exit() from a work item.
 
 	// Step 1: Crash on a call from a drained work item. Drains do not nest,
 	// so no queued work or due timer could run under it.
 	if (unlikely(_dispatch_wasi_in_drain())) {
-		DISPATCH_CLIENT_CRASH(0, "dispatch_main() called from within a "
-				"drained work item on single-threaded WASI");
+		DISPATCH_CLIENT_CRASH(0, "dispatch_main() called from a work item");
 	}
 	_dispatch_object_debug(&_dispatch_main_q, "%s", __func__);
-	// Step 2: Drain all runnable work. Then wait for the next armed timer
-	// or event source. With neither, the process waits forever, so crash.
+	// Step 2: Drain all work, then wait for the next timer or event source.
+	// With neither, the wait would never end, so crash.
 	for (;;) {
 		_dispatch_wasi_drain();
 		uint64_t deadline = _dispatch_wasi_next_timer_ns();
@@ -7345,8 +7314,8 @@ dispatch_main(void)
 			_dispatch_wasi_wait_for_events(deadline);
 			continue;
 		}
-		DISPATCH_CLIENT_CRASH(0,
-				"dispatch_main(): no runnable work on single-threaded WASI");
+		DISPATCH_CLIENT_CRASH(0, "dispatch_main() with no work, timer, "
+				"or event source");
 	}
 #else // defined(__wasi__)
 #if HAVE_PTHREAD_MAIN_NP

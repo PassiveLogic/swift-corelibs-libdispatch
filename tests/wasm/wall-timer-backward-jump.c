@@ -31,21 +31,22 @@
 int
 main(void)
 {
-	dispatch_queue_t main_q = dispatch_get_main_queue();
+	dispatch_queue_t main_queue = dispatch_get_main_queue();
 	dispatch_source_t ticker = dispatch_source_create(
-			DISPATCH_SOURCE_TYPE_TIMER, 0, 0, main_q);
+			DISPATCH_SOURCE_TYPE_TIMER, 0, 0, main_queue);
 	dispatch_source_set_timer(ticker, DISPATCH_TIME_NOW,
 			50 * NSEC_PER_MSEC, 0);
 	dispatch_source_set_event_handler(ticker, ^{ });
 	dispatch_resume(ticker);
 
-	dispatch_after(dispatch_walltime(NULL, 500 * NSEC_PER_MSEC), main_q, ^{
+	dispatch_after(dispatch_walltime(NULL, 500 * NSEC_PER_MSEC),
+			main_queue, ^{
 		puts("FAIL: wall timer fired before the backward clock change "
 				"caught up");
 		exit(1);
 	});
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 1500 * NSEC_PER_MSEC),
-			main_q, ^{
+			main_queue, ^{
 		puts("wall timer followed the backward clock change");
 		exit(0);
 	});

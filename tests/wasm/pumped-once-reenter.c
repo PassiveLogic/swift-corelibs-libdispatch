@@ -29,21 +29,24 @@
 #include <dispatch/dispatch.h>
 #include <stdio.h>
 
-static dispatch_once_t pred;
+static dispatch_once_t predicate;
 
 int
 main(void)
 {
-	dispatch_queue_t other = dispatch_queue_create("wasi.pumped.other", NULL);
-	dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-	dispatch_once(&pred, ^{
+	dispatch_queue_t other = dispatch_queue_create("wasi.pumped.other",
+			DISPATCH_QUEUE_SERIAL);
+	dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+	dispatch_once(&predicate, ^{
 		dispatch_async(other, ^{
-			dispatch_semaphore_signal(sem);
+			dispatch_semaphore_signal(semaphore);
 			puts("pumped item enters the same dispatch_once");
 			fflush(stdout);
-			dispatch_once(&pred, ^{ puts("FAIL: initializer ran twice"); });
+			dispatch_once(&predicate, ^{
+				puts("FAIL: initializer ran twice");
+			});
 		});
-		dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+		dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
 	});
 	puts("FAIL: once returned");
 	return 1;
