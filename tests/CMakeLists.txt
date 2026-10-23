@@ -176,7 +176,7 @@ if(WASI)
   #       WASI does not support file-descriptor dispatch sources
   # The wasi_* tests cover what single-threaded WASI adds: a wait that needs
   # queued work crashes, dispatch_async never runs its block inline,
-  # dispatch_main() runs work and crashes when idle.
+  # dispatch_main() runs work and crashes when idle, and the host event loop SPI.
   set(DISPATCH_C_TESTS
       api
       debug
@@ -195,7 +195,9 @@ if(WASI)
       wasi_deferred_submission
       wasi_wall_timer
       wasi_serial_lane_fairness
-      wasi_wait_diagnostics)
+      wasi_wait_diagnostics
+      wasi_scheduler_no_pump
+      wasi_scheduler_pump)
 else()
 # Tests that reliably pass on all platforms
 set(DISPATCH_C_TESTS
@@ -290,6 +292,8 @@ if(WASI)
   set_tests_properties(dispatch_wasi_wait_diagnostics_top_level PROPERTIES
     PASS_REGULAR_EXPRESSION
       "Deadlock: semaphore wait on single-threaded WASI")
+  set_tests_properties(dispatch_wasi_scheduler_pump PROPERTIES
+    PASS_REGULAR_EXPRESSION "Scheduler ran Dispatch inline")
 endif()
 
 if(NOT WASI)
