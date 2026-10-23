@@ -51,7 +51,14 @@
 
 
 #if USE_LIBDISPATCH_INIT_CONSTRUCTOR
+#if defined(__wasi__)
+// WASI links libdispatch statically, and wasm-ld runs default-priority
+// constructors in link order. Priority 101, the earliest open to clients,
+// makes libdispatch ready before them, as a shared library is elsewhere.
+DISPATCH_NOTHROW __attribute__((constructor(101)))
+#else
 DISPATCH_NOTHROW __attribute__((constructor))
+#endif
 void
 _libdispatch_init(void);
 
@@ -1407,8 +1414,14 @@ DISPATCH_NOINLINE
 void
 _dispatch_temporary_resource_shortage(void)
 {
+#if defined(__wasi__)
+	// No other WASI thread can free memory while this one sleeps. Thus the
+	// allocation retry of the caller can never succeed.
+	DISPATCH_CLIENT_CRASH(0, "Out of memory");
+#else
 	sleep(1);
 	__asm__ __volatile__("");  // prevent tailcall
+#endif
 }
 
 void *
