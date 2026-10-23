@@ -199,7 +199,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
       wasi_wait_diagnostics
       wasi_scheduler_no_pump
       wasi_scheduler_pump
-      wasi_main_queue_perform)
+      wasi_main_queue_perform
+      wasi_constructor_main_queue
+      wasi_alloc_failure)
 else()
 # Tests that reliably pass on all platforms
 set(DISPATCH_C_TESTS
@@ -287,6 +289,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
       "Deadlock: dispatch_sync or dispatch_async_and_wait from a work item")
   set_tests_properties(dispatch_wasi_scheduler_pump PROPERTIES
     PASS_REGULAR_EXPRESSION "Scheduler ran Dispatch inline")
+  # Allocation failure must be a named crash, not a hang: the sole thread
+  # cannot free memory while it sleeps. A 16 MiB --max-memory lets the test
+  # reach the limit in milliseconds. One binary fails an object allocation,
+  # the other a continuation allocation.
+  add_unit_test(dispatch_wasi_alloc_failure_async
+                SOURCES
+                  dispatch_wasi_alloc_failure.c)
+  target_compile_definitions(dispatch_wasi_alloc_failure_async PRIVATE
+    ALLOC_FAILURE_ASYNC=1)
+  foreach(test dispatch_wasi_alloc_failure dispatch_wasi_alloc_failure_async)
+    target_link_options(${test} PRIVATE "-Wl,--max-memory=16777216")
+    set_tests_properties(${test} PROPERTIES
+      PASS_REGULAR_EXPRESSION "Out of memory")
+  endforeach()
 endif()
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "WASI")

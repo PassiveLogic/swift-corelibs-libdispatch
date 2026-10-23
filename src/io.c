@@ -1448,6 +1448,18 @@ _dispatch_fd_entry_create(dispatch_queue_t q)
 	return fd_entry;
 }
 
+#if defined(__wasi__)
+// Some WASI hosts refuse fd_fdstat_set_flags on stdio and directory
+// handles (EBADF, ENOTSUP, or ENOSYS). That is host policy, not a bug, so
+// the fd stays blocking.
+#define _DISPATCH_IO_SETFL_HOST_ERRORS \
+		case EBADF: case ENOTSUP: case ENOSYS: \
+			orig_flags = -1; \
+			break;
+#else
+#define _DISPATCH_IO_SETFL_HOST_ERRORS
+#endif
+
 static dispatch_fd_entry_t
 _dispatch_fd_entry_create_with_fd(dispatch_fd_t fd, uintptr_t hash)
 {
@@ -1560,6 +1572,7 @@ _dispatch_fd_entry_create_with_fd(dispatch_fd_t fd, uintptr_t hash)
 			if (orig_flags != -1) {
 				_dispatch_io_syscall_switch(err,
 					fcntl(fd, F_SETFL, orig_flags | O_NONBLOCK),
+					_DISPATCH_IO_SETFL_HOST_ERRORS
 					default:
 						orig_flags = -1;
 						(void)dispatch_assume_zero(err);
@@ -2367,6 +2380,12 @@ _dispatch_operation_advise(dispatch_operation_t op, size_t chunk_size)
 		case 0: break;
 		case EINVAL: break; // unsupported advice or file type
 		case ESPIPE: break; // fd refers to a pipe or FIFO
+#if defined(__wasi__)
+		// fd_advise runs on the host. A macOS host maps it to F_RDADVISE,
+		// so accept the benign errors of the F_RDADVISE arm above.
+		case EFBIG: break; // advised past the end of the file
+		case ENOTSUP: break; // not all file systems support read advice
+#endif
 		default: (void)dispatch_assume_zero(err); break;
 	}
 #elif defined(__OpenBSD__)
