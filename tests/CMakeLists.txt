@@ -198,7 +198,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
       wasi_pumped_mgr_under_sync
       wasi_wait_diagnostics
       wasi_scheduler_no_pump
-      wasi_scheduler_pump)
+      wasi_scheduler_pump
+      wasi_main_queue_perform)
 else()
 # Tests that reliably pass on all platforms
 set(DISPATCH_C_TESTS
