@@ -35,7 +35,7 @@
 
 // Single-threaded WASI has no worker or manager thread. A poke only records
 // pending work. The sole thread drains it at a pump point: a blocking wait
-// (shims/lock.c) or dispatch_main().
+// (shims/lock.c), dispatch_main(), or _dispatch_wasi_event_loop_perform().
 // One drain step runs the first phase with work: due timers, the manager
 // queue, the main queue (not from a blocking wait), one root item.
 // Main and root steps alternate. Roots are served round-robin, so QoS orders
@@ -57,6 +57,24 @@ static bool _dispatch_wasi_mgr_pending;
 static bool _dispatch_wasi_main_ran_last;
 // A poke inside a drain step records work only. The running pump takes it.
 static bool _dispatch_wasi_draining;
+static void (*_dispatch_wasi_host_schedule)(void *);
+static void *_dispatch_wasi_host_context;
+static bool _dispatch_wasi_host_turn_scheduled;
+static bool _dispatch_wasi_host_schedule_in_progress;
+static bool _dispatch_wasi_performing;
+// A timer armed before registration needs one host turn, because the host
+// reads the timer delay only after a perform call.
+static bool _dispatch_wasi_armed_timer_unseen;
+
+static void
+_dispatch_wasi_schedule_host_turn(void)
+{
+	if (_dispatch_wasi_host_turn_scheduled) return;
+	_dispatch_wasi_host_turn_scheduled = true;
+	_dispatch_wasi_host_schedule_in_progress = true;
+	_dispatch_wasi_host_schedule(_dispatch_wasi_host_context);
+	_dispatch_wasi_host_schedule_in_progress = false;
+}
 
 DISPATCH_ALWAYS_INLINE
 static inline bool
@@ -66,6 +84,49 @@ _dispatch_wasi_root_work_pending(void)
 		if (_dispatch_wasi_root_pending[i]) return true;
 	}
 	return false;
+}
+
+DISPATCH_ALWAYS_INLINE
+static inline bool
+_dispatch_wasi_work_pending(void)
+{
+	return _dispatch_wasi_mgr_pending || _dispatch_wasi_main_pending ||
+			_dispatch_wasi_root_work_pending();
+}
+
+// True when another drain step can act without a wait.
+static bool
+_dispatch_wasi_has_runnable_work(void)
+{
+	if (_dispatch_wasi_work_pending()) return true;
+	if (_dispatch_timers_heap[0].dth_dirty_bits) return true;
+	uint64_t next_timer = _dispatch_wasi_next_timer_ns();
+	return next_timer && next_timer <= _dispatch_uptime();
+}
+
+// A poke records work and never drains. Outside a drain or perform, it asks
+// a registered host scheduler for one turn.
+static void
+_dispatch_wasi_note_pending(void)
+{
+	if (_dispatch_wasi_host_schedule && !_dispatch_wasi_draining &&
+			!_dispatch_wasi_performing) {
+		_dispatch_wasi_schedule_host_turn();
+	}
+}
+
+// After a drain step outside perform, ask the host for a turn if work
+// remains or a timer was armed before registration. A pump that keeps
+// running can leave that turn empty.
+static void
+_dispatch_wasi_hand_off_pending(void)
+{
+	if (_dispatch_wasi_host_schedule && !_dispatch_wasi_host_turn_scheduled &&
+			!_dispatch_wasi_performing &&
+			(_dispatch_wasi_armed_timer_unseen ||
+			_dispatch_wasi_has_runnable_work())) {
+		_dispatch_wasi_note_pending();
+	}
 }
 
 #pragma mark dispatch_unote_t
@@ -200,6 +261,11 @@ _dispatch_wasi_sleep_until(uint64_t uptime_ns)
 bool
 _dispatch_wasi_drain_step(bool include_main)
 {
+	// The scheduler callback must not run Dispatch. A pump inside it would
+	// run blocks on the stack of the dispatch_async that asked for the turn.
+	if (unlikely(_dispatch_wasi_host_schedule_in_progress)) {
+		DISPATCH_CLIENT_CRASH(0, "Scheduler ran Dispatch inline");
+	}
 	if (_dispatch_wasi_draining) {
 		// Drains do not nest, because the queue state machinery is not
 		// reentrant. The outer drain takes the work.
@@ -259,6 +325,7 @@ _dispatch_wasi_drain_step(bool include_main)
 
 	_dispatch_thread_setspecific(dispatch_wlh_key, borrowed_wlh);
 	_dispatch_wasi_draining = false;
+	_dispatch_wasi_hand_off_pending();
 	return did_work;
 }
 
@@ -289,12 +356,77 @@ _dispatch_wasi_root_queue_poke(dispatch_queue_global_t dq)
 		DISPATCH_INTERNAL_CRASH(dq, "Poke of a non-global root queue");
 	}
 	_dispatch_wasi_root_pending[idx] = true;
+	_dispatch_wasi_note_pending();
 }
 
 void
 _dispatch_wasi_main_queue_poke(void)
 {
 	_dispatch_wasi_main_pending = true;
+	_dispatch_wasi_note_pending();
+}
+
+#pragma mark host event loop SPI
+
+void
+_dispatch_wasi_event_loop_set_scheduler(
+		dispatch_wasi_event_loop_schedule_t schedule, void *context)
+{
+	if (_dispatch_wasi_host_schedule) {
+		DISPATCH_CLIENT_CRASH(0, "Scheduler already registered");
+	}
+	_dispatch_wasi_host_schedule = schedule;
+	_dispatch_wasi_host_context = context;
+	// Hand over work and timers from before registration. Inside a drain,
+	// the running pump does it when its step ends.
+	_dispatch_wasi_armed_timer_unseen = _dispatch_wasi_next_timer_ns() != 0;
+	_dispatch_wasi_hand_off_pending();
+}
+
+bool
+_dispatch_wasi_event_loop_perform(unsigned long max_steps,
+		bool consumes_scheduled_turn)
+{
+	if (!_dispatch_wasi_host_schedule) {
+		DISPATCH_CLIENT_CRASH(0, "Scheduler not registered");
+	}
+	if (!max_steps) {
+		DISPATCH_CLIENT_CRASH(0, "Zero step budget");
+	}
+	if (_dispatch_wasi_host_schedule_in_progress) {
+		DISPATCH_CLIENT_CRASH(0, "Perform called from the scheduler");
+	}
+	if (_dispatch_wasi_draining) {
+		DISPATCH_CLIENT_CRASH(0, "Perform called from a work item");
+	}
+
+	if (consumes_scheduled_turn) {
+		_dispatch_wasi_host_turn_scheduled = false;
+	}
+	_dispatch_wasi_armed_timer_unseen = false;
+
+	// Pokes during these steps request no host turn.
+	_dispatch_wasi_performing = true;
+	for (unsigned long step = 0; step < max_steps; step++) {
+		if (!_dispatch_wasi_drain_step(true)) break;
+	}
+	_dispatch_wasi_performing = false;
+
+	bool more_work = _dispatch_wasi_has_runnable_work();
+	if (more_work) {
+		_dispatch_wasi_schedule_host_turn();
+	}
+	return more_work;
+}
+
+int64_t
+_dispatch_wasi_event_loop_next_timer_delay(void)
+{
+	uint64_t deadline = _dispatch_wasi_next_timer_ns();
+	if (!deadline) return -1;
+	uint64_t now = _dispatch_uptime();
+	if (deadline <= now) return 0;
+	return (int64_t)MIN(deadline - now, INT64_MAX);
 }
 
 #pragma mark dispatch_loop
@@ -311,6 +443,7 @@ _dispatch_event_loop_poke(dispatch_wlh_t wlh,
 {
 	if (wlh == DISPATCH_WLH_MANAGER) {
 		_dispatch_wasi_mgr_pending = true;
+		_dispatch_wasi_note_pending();
 		return;
 	}
 	// Without DISPATCH_USE_KEVENT_WORKLOOP, every poke caller passes
