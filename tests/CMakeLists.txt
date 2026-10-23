@@ -173,7 +173,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
   #       WASI does not support file-descriptor dispatch sources
   # The wasi_* tests cover what single-threaded WASI adds: a top-level wait
   # pumps queued work, a wait inside a work item crashes, dispatch_main()
-  # runs work and crashes when idle.
+  # runs work and crashes when idle, and the host event loop SPI.
   set(DISPATCH_C_TESTS
       api
       debug
@@ -196,7 +196,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
       wasi_serial_lane_fairness
       wasi_pumped_ownership
       wasi_pumped_mgr_under_sync
-      wasi_wait_diagnostics)
+      wasi_wait_diagnostics
+      wasi_scheduler_no_pump
+      wasi_scheduler_pump)
 else()
 # Tests that reliably pass on all platforms
 set(DISPATCH_C_TESTS
@@ -282,6 +284,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
   set_tests_properties(dispatch_wasi_wait_diagnostics PROPERTIES
     PASS_REGULAR_EXPRESSION
       "Deadlock: dispatch_sync or dispatch_async_and_wait from a work item")
+  set_tests_properties(dispatch_wasi_scheduler_pump PROPERTIES
+    PASS_REGULAR_EXPRESSION "Scheduler ran Dispatch inline")
 endif()
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "WASI")
