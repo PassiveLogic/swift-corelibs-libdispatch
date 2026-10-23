@@ -195,7 +195,9 @@ if(WASI)
       wasi_deferred_submission
       wasi_wall_timer
       wasi_serial_lane_fairness
-      wasi_wait_diagnostics)
+      wasi_wait_diagnostics
+      wasi_constructor_main_queue
+      wasi_alloc_failure)
 else()
 # Tests that reliably pass on all platforms
 set(DISPATCH_C_TESTS
@@ -290,6 +292,20 @@ if(WASI)
   set_tests_properties(dispatch_wasi_wait_diagnostics_top_level PROPERTIES
     PASS_REGULAR_EXPRESSION
       "Deadlock: semaphore wait on single-threaded WASI")
+  # Allocation failure must be a named crash, not a hang: the sole thread
+  # cannot free memory while it sleeps. A 16 MiB --max-memory lets the test
+  # reach the limit in milliseconds. One binary fails an object allocation,
+  # the other a continuation allocation.
+  add_unit_test(dispatch_wasi_alloc_failure_async
+                SOURCES
+                  dispatch_wasi_alloc_failure.c)
+  target_compile_definitions(dispatch_wasi_alloc_failure_async PRIVATE
+    ALLOC_FAILURE_ASYNC=1)
+  foreach(test dispatch_wasi_alloc_failure dispatch_wasi_alloc_failure_async)
+    target_link_options(${test} PRIVATE "-Wl,--max-memory=16777216")
+    set_tests_properties(${test} PROPERTIES
+      PASS_REGULAR_EXPRESSION "Out of memory")
+  endforeach()
 endif()
 
 if(NOT WASI)
