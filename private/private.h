@@ -34,7 +34,7 @@
 #include <os/base.h>
 #elif defined(_WIN32)
 #include <os/generic_win_base.h>
-#elif defined(__unix__)
+#elif defined(__unix__) || defined(__wasi__)
 #include <os/generic_unix_base.h>
 #endif
 
@@ -157,6 +157,7 @@ bool _dispatch_is_fork_of_multithreaded_parent(void);
 API_AVAILABLE(macos(10.12), ios(10.0), tvos(10.0), watchos(3.0))
 DISPATCH_EXPORT DISPATCH_NOTHROW
 void _dispatch_prohibit_transition_to_multithreaded(bool prohibit);
+
 
 /*
  * dispatch_time convenience macros
