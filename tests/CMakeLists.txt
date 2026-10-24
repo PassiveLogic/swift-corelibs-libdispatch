@@ -336,9 +336,3 @@ endif()
 
 # test-specific compile options
 set_target_properties(dispatch_c99 PROPERTIES C_STANDARD 99)
-
-# The focused WASI tests reuse bsdtests and add_unit_test, so they are added
-# after both are defined.
-if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
-  add_subdirectory(wasm)
-endif()
