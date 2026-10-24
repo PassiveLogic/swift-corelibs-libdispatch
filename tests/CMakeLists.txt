@@ -1,8 +1,16 @@
 if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
   # The command that runs the .wasm test binaries. It can be a CMake list,
   # for example "wasmtime;--some-flag". The runner must return the exit code
-  # of the guest. All WASI CLI runtimes do.
-  set(WASI_TEST_RUNNER "wasmtime" CACHE STRING
+  # of the guest. The default is the WasmKit that ships with the Swift
+  # toolchain.
+  get_filename_component(_wasi_toolchain_bin "${CMAKE_C_COMPILER}" DIRECTORY)
+  find_program(WASMKIT_EXECUTABLE wasmkit HINTS "${_wasi_toolchain_bin}")
+  if(WASMKIT_EXECUTABLE)
+    set(_wasi_default_runner "${WASMKIT_EXECUTABLE};run")
+  else()
+    set(_wasi_default_runner "wasmkit;run")
+  endif()
+  set(WASI_TEST_RUNNER "${_wasi_default_runner}" CACHE STRING
       "Command (semicolon-separated list) used to execute WASI test binaries")
   list(GET WASI_TEST_RUNNER 0 _wasi_test_runner_program)
   find_program(WASI_TEST_RUNNER_EXECUTABLE "${_wasi_test_runner_program}")
@@ -163,6 +171,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
   #       to fire on worker threads meanwhile
   #   io_muxed, io_net, io_pipe, io_pipe_close, select: single-threaded
   #       WASI does not support file-descriptor dispatch sources
+  # The wasi_* tests cover what single-threaded WASI adds: a top-level wait
+  # pumps queued work, a wait inside a work item crashes, dispatch_main()
+  # runs work and crashes when idle, and the host event loop SPI.
   set(DISPATCH_C_TESTS
       api
       debug
@@ -174,7 +185,22 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
       timer_bit31
       timer_bit63
       timer_set_time
-      data)
+      data
+      wasi_blocking_waits
+      wasi_nested_wait
+      wasi_nested_timed_wait
+      wasi_dispatch_main_work
+      wasi_dispatch_main_idle
+      wasi_deferred_submission
+      wasi_wall_timer
+      wasi_serial_lane_fairness
+      wasi_pumped_ownership
+      wasi_pumped_mgr_under_sync
+      wasi_wait_diagnostics
+      wasi_scheduler_no_pump
+      wasi_scheduler_pump
+      wasi_constructor_main_queue
+      wasi_alloc_failure)
 else()
 # Tests that reliably pass on all platforms
 set(DISPATCH_C_TESTS
@@ -249,6 +275,34 @@ foreach(test ${DISPATCH_C_TESTS})
                 SOURCES
                   dispatch_${test}.c)
 endforeach()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  # These tests pass when the guest crashes with the expected diagnostic.
+  # The exit status is ignored and the output must contain the message.
+  set_tests_properties(dispatch_wasi_nested_wait PROPERTIES
+    PASS_REGULAR_EXPRESSION "Deadlock: semaphore wait from a work item")
+  set_tests_properties(dispatch_wasi_dispatch_main_idle PROPERTIES
+    PASS_REGULAR_EXPRESSION "dispatch_main\\(\\) with no work or timer")
+  set_tests_properties(dispatch_wasi_wait_diagnostics PROPERTIES
+    PASS_REGULAR_EXPRESSION
+      "Deadlock: dispatch_sync or dispatch_async_and_wait from a work item")
+  set_tests_properties(dispatch_wasi_scheduler_pump PROPERTIES
+    PASS_REGULAR_EXPRESSION "Scheduler ran Dispatch inline")
+  # Allocation failure must be a named crash, not a hang: the sole thread
+  # cannot free memory while it sleeps. A 16 MiB --max-memory lets the test
+  # reach the limit in milliseconds. One binary fails an object allocation,
+  # the other a continuation allocation.
+  add_unit_test(dispatch_wasi_alloc_failure_async
+                SOURCES
+                  dispatch_wasi_alloc_failure.c)
+  target_compile_definitions(dispatch_wasi_alloc_failure_async PRIVATE
+    ALLOC_FAILURE_ASYNC=1)
+  foreach(test dispatch_wasi_alloc_failure dispatch_wasi_alloc_failure_async)
+    target_link_options(${test} PRIVATE "-Wl,--max-memory=16777216")
+    set_tests_properties(${test} PROPERTIES
+      PASS_REGULAR_EXPRESSION "Out of memory")
+  endforeach()
+endif()
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "WASI")
   set_tests_properties(dispatch_io_pipe PROPERTIES TIMEOUT 15)
