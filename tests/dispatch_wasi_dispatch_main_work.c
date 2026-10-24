@@ -22,7 +22,7 @@
  * dispatch_main() runs main-queue work scheduled with dispatch_after: the
  * timer fires on the sole WASI thread and its block runs on the main queue,
  * where it stops the test. Without that work dispatch_main() would crash
- * idle (see dispatch-main-idle.c).
+ * idle (see dispatch_wasi_dispatch_main_idle.c).
  */
 #include <dispatch/dispatch.h>
 

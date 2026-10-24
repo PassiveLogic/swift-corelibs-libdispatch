@@ -30,7 +30,6 @@
 
 #include <bsdtests.h>
 #include "dispatch_test.h"
-#include "wasi-test.h"
 
 int
 main(void)
@@ -46,11 +45,11 @@ main(void)
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 10 * NSEC_PER_SEC),
 			queue, ^{ });
 	dispatch_async(queue, ^{
-		uint64_t start = wasi_test_now_ns();
+		uint64_t start = dispatch_time(DISPATCH_TIME_NOW, 0);
 		result = dispatch_semaphore_wait(semaphore,
 				dispatch_time(DISPATCH_TIME_NOW,
 				200 * NSEC_PER_MSEC));
-		elapsed_ms = (long)((wasi_test_now_ns() - start) /
+		elapsed_ms = (long)((dispatch_time(DISPATCH_TIME_NOW, 0) - start) /
 				NSEC_PER_MSEC);
 		dispatch_semaphore_signal(done);
 	});
