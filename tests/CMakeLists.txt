@@ -199,6 +199,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
       wasi_wait_diagnostics
       wasi_scheduler_no_pump
       wasi_scheduler_pump
+      wasi_main_queue_perform
       wasi_constructor_main_queue
       wasi_alloc_failure)
 else()
