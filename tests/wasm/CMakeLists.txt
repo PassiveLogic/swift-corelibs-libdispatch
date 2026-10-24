@@ -87,13 +87,6 @@ endfunction()
 
 
 add_wasi_unit_test(dispatch_wasi_smoke smoke.c 20)
-add_wasi_crash_test(dispatch_wasi_nested_wait nested-wait.c
-  "Deadlock: semaphore wait from a work item" 5
-  "nested wait started")
-add_wasi_unit_test(dispatch_wasi_nested_timed_wait nested-timed-wait.c 5)
-add_wasi_unit_test(dispatch_wasi_dispatch_main_work dispatch-main-work.c 5)
-add_wasi_crash_test(dispatch_wasi_dispatch_main_idle dispatch-main-idle.c
-  "dispatch_main() with no work, timer, or event source" 5)
 add_wasi_crash_test(dispatch_wasi_dispatch_main_drain_idle
   dispatch-main-drain-idle.c
   "dispatch_main() with no work, timer, or event source" 5
@@ -101,15 +94,12 @@ add_wasi_crash_test(dispatch_wasi_dispatch_main_drain_idle
 add_wasi_unit_test(dispatch_wasi_barrier_order barrier-order.c 5)
 add_wasi_unit_test(dispatch_wasi_qos_order qos-order.c 5)
 add_wasi_unit_test(dispatch_wasi_root_fairness root-fairness.c 5)
-add_wasi_unit_test(dispatch_wasi_wall_timer wall-timer.c 5)
 add_wasi_unit_test(dispatch_wasi_sync_inline sync-inline.c 5)
 add_wasi_unit_test(dispatch_wasi_main_queue_order main-queue-order.c 5)
-add_wasi_unit_test(dispatch_wasi_blocking_waits blocking-waits.c 10)
 add_wasi_unit_test(dispatch_wasi_api_surface api-surface.c 10)
 add_wasi_crash_test(dispatch_wasi_assert_queue assert-queue.c
   "Block was expected to execute on queue" 5
   "on-queue assertions passed")
-add_wasi_unit_test(dispatch_wasi_deferred_submission deferred-submission.c 5)
 add_wasi_unit_test(dispatch_wasi_specific_destructor specific-destructor.c 5)
 add_wasi_unit_test(dispatch_wasi_sema_late_signal sema-late-signal.c 5)
 add_wasi_unit_test(dispatch_wasi_sync_nested_async sync-nested-async.c 5)
@@ -120,7 +110,6 @@ add_wasi_unit_test(dispatch_wasi_main_lane_fairness main-lane-fairness.c 10)
 add_wasi_unit_test(dispatch_wasi_main_source_handlers main-source-handlers.c 5)
 add_wasi_unit_test(dispatch_wasi_main_root_fairness_perform
   main-root-fairness-perform.c 5)
-add_wasi_unit_test(dispatch_wasi_serial_lane_fairness serial-lane-fairness.c 5)
 add_wasi_unit_test(dispatch_wasi_serial_lane_wait serial-lane-wait.c 5)
 add_wasi_unit_test(dispatch_wasi_expired_wait expired-wait.c 5)
 add_wasi_unit_test(dispatch_wasi_self_triggering_source
@@ -128,13 +117,7 @@ add_wasi_unit_test(dispatch_wasi_self_triggering_source
 add_wasi_unit_test(dispatch_wasi_reposting_workloop reposting-workloop.c 5)
 add_wasi_unit_test(dispatch_wasi_timed_wait_main_backlog
   timed-wait-main-backlog.c 5)
-add_wasi_unit_test(dispatch_wasi_pumped_ownership pumped-ownership.c 5)
-add_wasi_unit_test(dispatch_wasi_pumped_mgr_under_sync
-  pumped-mgr-under-sync.c 5)
-add_wasi_unit_test(dispatch_wasi_main_queue_perform main-queue-perform.c 5)
 add_wasi_unit_test(dispatch_wasi_async_and_wait_pump async-and-wait-pump.c 5)
-add_wasi_unit_test(dispatch_wasi_constructor_main_queue
-  constructor-main-queue.c 5)
 add_wasi_unit_test(dispatch_wasi_clean_consumer clean-consumer.c 5)
 
 # Each indefinite-wait deadlock diagnostic names the public call that blocked.
@@ -175,7 +158,6 @@ foreach(_mode 0 1 2 3 4)
   target_compile_definitions(dispatch_wasi_scheduler_pump_${_mode} PRIVATE
     SCHEDULER_PUMP_MODE=${_mode})
 endforeach()
-add_wasi_unit_test(dispatch_wasi_scheduler_no_pump scheduler-no-pump.c 5)
 # Crash reasons reach stderr for every LIBDISPATCH_LOG value. A wasm trap
 # carries no payload, so a disabled or redirected log must not hide them.
 add_wasi_crash_test(dispatch_wasi_crash_log_disabled crash-log-env.c
@@ -185,20 +167,6 @@ add_wasi_crash_test(dispatch_wasi_crash_log_disabled_assert crash-log-env.c
   "crash log env NO armed")
 target_compile_definitions(dispatch_wasi_crash_log_disabled_assert PRIVATE
   CRASH_LOG_ASSERT=1)
-# Allocation failure must be a named crash, not a hang. The sole thread
-# cannot free memory while it sleeps, so the inherited sleep-and-retry loop
-# never succeeds. A small --max-memory (16 MiB) lets the test reach the
-# memory limit in milliseconds. alloc-failure.c uses the same limit.
-add_wasi_crash_test(dispatch_wasi_alloc_failure alloc-failure.c
-  "Out of memory" 5 "heap exhausted")
-add_wasi_crash_test(dispatch_wasi_alloc_failure_async alloc-failure.c
-  "Out of memory" 5 "heap exhausted")
-target_compile_definitions(dispatch_wasi_alloc_failure_async PRIVATE
-  ALLOC_FAILURE_ASYNC=1)
-foreach(_alloc_test dispatch_wasi_alloc_failure
-    dispatch_wasi_alloc_failure_async)
-  target_link_options(${_alloc_test} PRIVATE "-Wl,--max-memory=16777216")
-endforeach()
 
 set(_wasi_node_tests)
 

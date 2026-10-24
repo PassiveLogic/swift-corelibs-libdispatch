@@ -168,3 +168,37 @@ to get the gold linker.
     ninja install
     ```
 
+
+### Building and testing for WASI
+
+The WASI port builds a static library for single-threaded
+`wasm32-unknown-wasip1`. It needs a Swift 6.3 or newer toolchain with the
+matching Swift SDK for WASI, CMake 3.31 or newer, and Ninja.
+
+1. Point the build at the toolchain and the SDK's target directory:
+
+    ```
+    export SWIFT_WASI_TOOLCHAIN_PATH="$HOME/Library/Developer/Toolchains/swift-6.3-RELEASE.xctoolchain"
+    export SWIFT_WASI_SDK_PATH="$HOME/Library/org.swift.swiftpm/swift-sdks/swift-6.3-RELEASE_wasm.artifactbundle/swift-6.3-RELEASE_wasm/wasm32-unknown-wasip1"
+    ```
+
+    `SWIFT_WASI_TOOLCHAIN_PATH` is the `.xctoolchain` root with
+    `usr/bin/clang`. `SWIFT_WASI_SDK_PATH` is the directory that holds
+    `WASI.sdk` and `swift.xctoolchain`.
+
+2. Configure, build and test:
+
+    ```
+    cmake -G Ninja -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/WASI.cmake -DSWIFT_WASI_TOOLCHAIN_PATH="$SWIFT_WASI_TOOLCHAIN_PATH" -DSWIFT_WASI_SDK_PATH="$SWIFT_WASI_SDK_PATH" -DBUILD_TESTING=ON <path-to-source>
+    ninja
+    ctest
+    ```
+
+    The tests run under the WasmKit that ships with the toolchain. Set
+    `WASI_TEST_RUNNER` to use another WASI runtime, for example
+    `-DWASI_TEST_RUNNER=wasmtime`. When no runner is found, the tests
+    still build and are registered but disabled.
+
+    Add `-DENABLE_SWIFT=YES` to build and test the Swift overlay. The
+    fork's full regression suite is in `tests/wasm`. Some of its tests
+    need Node 19.8 or newer, and they show as disabled without it.
