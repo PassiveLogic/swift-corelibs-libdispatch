@@ -158,7 +158,6 @@ API_AVAILABLE(macos(10.12), ios(10.0), tvos(10.0), watchos(3.0))
 DISPATCH_EXPORT DISPATCH_NOTHROW
 void _dispatch_prohibit_transition_to_multithreaded(bool prohibit);
 
-
 /*
  * dispatch_time convenience macros
  */

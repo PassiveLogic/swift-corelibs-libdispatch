@@ -815,7 +815,7 @@ _dispatch_source_invoke2(dispatch_source_t ds, dispatch_invoke_context_t dic,
 #if defined(__wasi__)
 				// WASI has one thread and no overcommit thread to ask for.
 				// A source that triggers itself always re-queues, so it
-				// cannot keep the thread from timers, waits, and host turns.
+				// cannot keep the thread from timers and other queues.
 				avoid_starvation = true;
 #else
 				avoid_starvation = dq->do_targetq ||

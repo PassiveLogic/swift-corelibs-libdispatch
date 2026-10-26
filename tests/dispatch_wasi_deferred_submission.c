@@ -1,31 +1,23 @@
 /*
- * Copyright (c) 2026 Apple Inc. All rights reserved.
+ * This source file is part of the Swift.org open source project
  *
- * @APPLE_APACHE_LICENSE_HEADER_START@
+ * Copyright (c) 2026 Apple Inc. and the Swift project authors
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under Apache License v2.0 with Runtime Library Exception
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * See https://swift.org/LICENSE.txt for license information
+ * See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
 /*
  * Pins the submission semantics of the cooperative port. dispatch_async
  * never runs its block before the call returns: a poke only records pending
- * work, and the work runs at the next pump point (a blocking wait here;
- * dispatch_main() or a registered host turn elsewhere). This is the contract
- * threaded platforms give too. A blocking wait pumps root-queue work in FIFO
- * order within one queue, and never the main queue: as on Darwin and Linux,
- * main-queue work waits for dispatch_main() or a host turn.
+ * work, and the work runs at the next pump point (a blocking wait or
+ * dispatch_main()). Threaded platforms do not promise this: a worker thread
+ * can run the block before dispatch_async returns. A blocking wait pumps
+ * root-queue work in FIFO order within one queue, and never the main queue:
+ * as on Darwin and Linux, main-queue work waits for dispatch_main().
  *
  *  1. At top level, a submitted block has not run when dispatch_async
  *     returns. It runs at the next blocking wait.
