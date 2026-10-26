@@ -13,8 +13,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
   set(WASI_TEST_RUNNER "${_wasi_default_runner}" CACHE STRING
       "Command (semicolon-separated list) used to execute WASI test binaries")
   list(GET WASI_TEST_RUNNER 0 _wasi_test_runner_program)
-  find_program(WASI_TEST_RUNNER_EXECUTABLE "${_wasi_test_runner_program}")
-  if(NOT WASI_TEST_RUNNER_EXECUTABLE)
+  # Not cached, so a changed WASI_TEST_RUNNER is looked up again.
+  find_program(_wasi_test_runner_executable "${_wasi_test_runner_program}"
+               NO_CACHE)
+  if(NOT _wasi_test_runner_executable)
     message(STATUS
       "WASI test runner '${_wasi_test_runner_program}' not found; "
       "WASI unit tests will be registered but disabled")
@@ -140,7 +142,7 @@ function(add_unit_test name)
                          PROPERTIES
                            TIMEOUT 120
                            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-    if(NOT WASI_TEST_RUNNER_EXECUTABLE)
+    if(NOT _wasi_test_runner_executable)
       set_tests_properties(${name} PROPERTIES DISABLED TRUE)
     endif()
   else()
