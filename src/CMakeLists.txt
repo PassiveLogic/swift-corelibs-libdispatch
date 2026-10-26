@@ -163,8 +163,6 @@ target_link_libraries(dispatch PRIVATE
 target_link_libraries(dispatch PUBLIC
   BlocksRuntime::BlocksRuntime)
 if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
-  target_link_libraries(dispatch PRIVATE
-    wasi-emulated-signal)
   target_link_libraries(dispatch PUBLIC
     wasi-emulated-getpid)
 endif()
