@@ -23,6 +23,21 @@
 #include <libutil.h>
 #include <fcntl.h>
 #endif
+#if defined(__wasi__)
+/*
+ * Include <sys/types.h> before the textual <sys/param.h>. This only
+ * matters when this header is parsed into the CDispatch clang module by
+ * Swift's ClangImporter (plain C builds are unaffected): the toolchain's
+ * wasi-libc.modulemap declares <sys/types.h> as a header of the
+ * SwiftWASILibc module but leaves <sys/param.h> and <endian.h> textual,
+ * so the static inline __bswap* definitions from <endian.h> end up both
+ * inside SwiftWASILibc (via <sys/types.h>) and textually in CDispatch
+ * (via <sys/param.h>), which clang rejects as redefinitions. Importing
+ * the module first makes its include guards visible, so the textual
+ * re-include below is skipped instead of redefining them.
+ */
+#include <sys/types.h>
+#endif
 #include <sys/param.h>
 
 #if __has_include(<sys/cdefs.h>)

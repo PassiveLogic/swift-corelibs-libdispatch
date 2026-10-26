@@ -1,0 +1,253 @@
+import { WASI } from 'node:wasi';
+import { spawn } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
+
+const runner = fileURLToPath(import.meta.url);
+
+async function runGuest(binary, guestOpts) {
+  const wasi = new WASI({
+    version: 'preview1',
+    args: [binary],
+    env: {},
+    preopens: guestOpts.preopens,
+  });
+  const importObject = wasi.getImportObject();
+  let memory = null;
+  if (guestOpts.denyFdPoll) {
+    // Emulate a limited host, such as a browser WASI shim. Reject a
+    // poll_oneoff call that has an fd_read or fd_write subscription with
+    // ENOTSUP. Pass clock-only sets through. A preview1 subscription is 48
+    // bytes, with the union tag at byte 8 (0 = clock).
+    const preview1 = importObject.wasi_snapshot_preview1;
+    const realPoll = preview1.poll_oneoff;
+    preview1.poll_oneoff = (inPtr, outPtr, nsubscriptions, neventsPtr) => {
+      const view = new DataView(memory.buffer);
+      for (let i = 0; i < nsubscriptions; i++) {
+        if (view.getUint8(inPtr + i * 48 + 8) !== 0) {
+          return 58; // __WASI_ERRNO_NOTSUP
+        }
+      }
+      return realPoll(inPtr, outPtr, nsubscriptions, neventsPtr);
+    };
+  }
+  if (guestOpts.fdPollEbadfAfter !== null) {
+    // Emulate wasmtime when an armed fd closes. If an fd in the poll set is
+    // no longer open, the whole poll_oneoff call fails with BADF. It does
+    // not set an error on that one subscription. Let the first n polls with
+    // an fd through (the registration capability probe). Fail each later one.
+    const preview1 = importObject.wasi_snapshot_preview1;
+    const realPoll = preview1.poll_oneoff;
+    let fdPolls = 0;
+    preview1.poll_oneoff = (inPtr, outPtr, nsubscriptions, neventsPtr) => {
+      const view = new DataView(memory.buffer);
+      let hasFd = false;
+      for (let i = 0; i < nsubscriptions; i++) {
+        if (view.getUint8(inPtr + i * 48 + 8) !== 0) hasFd = true;
+      }
+      if (hasFd && ++fdPolls > guestOpts.fdPollEbadfAfter) {
+        return 8; // __WASI_ERRNO_BADF
+      }
+      return realPoll(inPtr, outPtr, nsubscriptions, neventsPtr);
+    };
+  }
+  if (guestOpts.suppressPollHangup) {
+    // Emulate a host that never reports FD_READWRITE_HANGUP. wasmtime 47
+    // does this for pipes (observed, not documented). EOF then shows only as
+    // an fd that stays readable with no data. A preview1 event is 32 bytes:
+    // userdata u64 @0, error u16 @8, type u8 @10, fd_readwrite
+    // { nbytes u64 @16, flags u16 @24 }. Hangup is flags bit 0x1.
+    const preview1 = importObject.wasi_snapshot_preview1;
+    const realPoll = preview1.poll_oneoff;
+    preview1.poll_oneoff = (inPtr, outPtr, nsubscriptions, neventsPtr) => {
+      const rc = realPoll(inPtr, outPtr, nsubscriptions, neventsPtr);
+      if (rc === 0) {
+        const view = new DataView(memory.buffer);
+        const nevents = view.getUint32(neventsPtr, true);
+        for (let i = 0; i < nevents; i++) {
+          const type = view.getUint8(outPtr + i * 32 + 10);
+          if (type === 1 || type === 2) { // fd_read / fd_write
+            const flagsPtr = outPtr + i * 32 + 24;
+            view.setUint16(flagsPtr, view.getUint16(flagsPtr, true) & ~1,
+                true);
+          }
+        }
+      }
+      return rc;
+    };
+  }
+  if (guestOpts.wallClockOffset !== null) {
+    // Emulate a host wall-clock adjustment: after a delay, shift every
+    // CLOCK_REALTIME reading (clock id 0) by a fixed offset. The other
+    // clocks are untouched.
+    const preview1 = importObject.wasi_snapshot_preview1;
+    const realClockTimeGet = preview1.clock_time_get;
+    const start = performance.now();
+    const { afterMs, offsetMs } = guestOpts.wallClockOffset;
+    preview1.clock_time_get = (id, precision, timePtr) => {
+      const rc = realClockTimeGet(id, precision, timePtr);
+      if (rc === 0 && id === 0 && performance.now() - start >= afterMs) {
+        const view = new DataView(memory.buffer);
+        const time = view.getBigUint64(timePtr, true);
+        view.setBigUint64(timePtr,
+            time + BigInt(offsetMs) * 1000000n, true);
+      }
+      return rc;
+    };
+  }
+  try {
+    const module = await WebAssembly.compile(await readFile(binary));
+    const instance = await WebAssembly.instantiate(module, importObject);
+    memory = instance.exports.memory;
+    process.exitCode = wasi.start(instance);
+  } catch (error) {
+    console.error(`[trap] ${error.message}`);
+    // 134 = 128 + SIGABRT, the status of a native abort()
+    process.exitCode = 134;
+  }
+}
+
+async function runChecked(...argv) {
+  // --stdin-after <ms>:<text> sends <text> to the guest stdin after a delay.
+  // So a readiness test proves that the guest parks in the host poll, and
+  // does not find data already buffered.
+  let stdinAfter = null;
+  const guestFlags = [];
+  for (;;) {
+    if (argv[0] === '--stdin-after') {
+      const spec = argv[1] ?? '';
+      const colon = spec.indexOf(':');
+      stdinAfter = { ms: Number(spec.slice(0, colon)), text: spec.slice(colon + 1) };
+      argv = argv.slice(2);
+      if (colon < 1 || !Number.isFinite(stdinAfter.ms)) {
+        console.error('bad --stdin-after spec, want <ms>:<text>');
+        return 2;
+      }
+    } else if (argv[0] === '--deny-fd-poll' ||
+        argv[0] === '--suppress-poll-hangup') {
+      guestFlags.push(argv[0]);
+      argv = argv.slice(1);
+    } else if (argv[0] === '--fd-poll-ebadf-after') {
+      const n = Number(argv[1]);
+      if (!Number.isInteger(n) || n < 0) {
+        console.error('bad --fd-poll-ebadf-after count, want an integer');
+        return 2;
+      }
+      guestFlags.push(argv[0], argv[1]);
+      argv = argv.slice(2);
+    } else if (argv[0] === '--preopen') {
+      const spec = argv[1] ?? '';
+      if (spec.indexOf(':') < 1) {
+        console.error('bad --preopen spec, want <guest dir>:<host dir>');
+        return 2;
+      }
+      guestFlags.push(argv[0], argv[1]);
+      argv = argv.slice(2);
+    } else if (argv[0] === '--wall-clock-offset') {
+      const spec = argv[1] ?? '';
+      const colon = spec.indexOf(':');
+      const afterMs = Number(spec.slice(0, colon));
+      const offsetMs = Number(spec.slice(colon + 1));
+      if (colon < 1 || !Number.isInteger(afterMs) ||
+          !Number.isInteger(offsetMs)) {
+        console.error('bad --wall-clock-offset spec, want <ms>:<offset ms>');
+        return 2;
+      }
+      guestFlags.push(argv[0], argv[1]);
+      argv = argv.slice(2);
+    } else {
+      break;
+    }
+  }
+  const [mode, binary, ...expected] = argv;
+  if (!['success', 'crash'].includes(mode) || !binary || expected.length === 0) {
+    console.error('usage: run-wasi-test.mjs [--stdin-after <ms>:<text>] [--deny-fd-poll] [--suppress-poll-hangup] [--fd-poll-ebadf-after <n>] [--preopen <guest>:<host>] [--wall-clock-offset <ms>:<offset ms>] <success|crash> <binary> <expected text>...');
+    return 2;
+  }
+
+  const guestArgs = ['--guest', ...guestFlags, binary];
+  const child = spawn(process.execPath, [runner, ...guestArgs], {
+    stdio: [stdinAfter ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+  });
+  let stdinTimer = null;
+  if (stdinAfter) {
+    // EPIPE from a guest that already exited is not a runner failure
+    child.stdin.on('error', () => {});
+    stdinTimer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null &&
+          child.stdin.writable) {
+        child.stdin.write(stdinAfter.text);
+        child.stdin.end();
+      }
+    }, stdinAfter.ms);
+  }
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', data => { stdout += data; });
+  child.stderr.on('data', data => { stderr += data; });
+
+  const result = await new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (code, signal) => {
+      if (stdinTimer) clearTimeout(stdinTimer);
+      resolve({ code, signal });
+    });
+  });
+  process.stdout.write(stdout);
+  process.stderr.write(stderr);
+
+  const crashed = result.signal !== null || result.code !== 0;
+  const output = stdout + stderr;
+  if ((mode === 'crash') !== crashed) {
+    console.error(`expected ${mode}, observed exit=${result.code} signal=${result.signal}`);
+    return 1;
+  }
+  for (const text of expected) {
+    if (!output.includes(text)) {
+      console.error(`expected output was not found: ${text}`);
+      return 1;
+    }
+  }
+  return 0;
+}
+
+if (process.argv[2] === '--guest') {
+  const guestOpts = {
+    denyFdPoll: false,
+    suppressPollHangup: false,
+    fdPollEbadfAfter: null,
+    wallClockOffset: null,
+    preopens: {},
+  };
+  let i = 3;
+  for (;; i++) {
+    if (process.argv[i] === '--deny-fd-poll') {
+      guestOpts.denyFdPoll = true;
+    } else if (process.argv[i] === '--suppress-poll-hangup') {
+      guestOpts.suppressPollHangup = true;
+    } else if (process.argv[i] === '--fd-poll-ebadf-after') {
+      guestOpts.fdPollEbadfAfter = Number(process.argv[i + 1]);
+      i++;
+    } else if (process.argv[i] === '--preopen') {
+      const spec = process.argv[i + 1];
+      const colon = spec.indexOf(':');
+      guestOpts.preopens[spec.slice(0, colon)] = spec.slice(colon + 1);
+      i++;
+    } else if (process.argv[i] === '--wall-clock-offset') {
+      const spec = process.argv[i + 1];
+      const colon = spec.indexOf(':');
+      guestOpts.wallClockOffset = {
+        afterMs: Number(spec.slice(0, colon)),
+        offsetMs: Number(spec.slice(colon + 1)),
+      };
+      i++;
+    } else {
+      break;
+    }
+  }
+  await runGuest(process.argv[i], guestOpts);
+} else {
+  process.exitCode = await runChecked(...process.argv.slice(2));
+}

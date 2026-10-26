@@ -1,3 +1,25 @@
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  # The command that runs the .wasm test binaries. It can be a CMake list,
+  # for example "wasmtime;--some-flag". The runner must return the exit code
+  # of the guest. The default is the WasmKit that ships with the Swift
+  # toolchain.
+  get_filename_component(_wasi_toolchain_bin "${CMAKE_C_COMPILER}" DIRECTORY)
+  find_program(WASMKIT_EXECUTABLE wasmkit HINTS "${_wasi_toolchain_bin}")
+  if(WASMKIT_EXECUTABLE)
+    set(_wasi_default_runner "${WASMKIT_EXECUTABLE};run")
+  else()
+    set(_wasi_default_runner "wasmkit;run")
+  endif()
+  set(WASI_TEST_RUNNER "${_wasi_default_runner}" CACHE STRING
+      "Command (semicolon-separated list) used to execute WASI test binaries")
+  list(GET WASI_TEST_RUNNER 0 _wasi_test_runner_program)
+  find_program(WASI_TEST_RUNNER_EXECUTABLE "${_wasi_test_runner_program}")
+  if(NOT WASI_TEST_RUNNER_EXECUTABLE)
+    message(STATUS
+      "WASI test runner '${_wasi_test_runner_program}' not found; "
+      "WASI unit tests will be registered but disabled")
+  endif()
+endif()
 
 if(WIN32)
     execute_process(COMMAND
@@ -25,6 +47,10 @@ add_library(bsdtests
               dispatch_test.c)
 target_link_libraries(bsdtests PUBLIC
   dispatch)
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  # The harness logs the process id. libdispatch links the getpid emulation.
+  target_compile_definitions(bsdtests PRIVATE _WASI_EMULATED_GETPID)
+endif()
 target_include_directories(bsdtests
                            PRIVATE
                              ${CMAKE_CURRENT_BINARY_DIR}
@@ -47,17 +73,21 @@ if (WIN32)
                           bcrypt)
 endif ()
 
-add_executable(bsdtestharness
-               bsdtestharness.c)
-target_include_directories(bsdtestharness
-                           PRIVATE
-                             ${CMAKE_CURRENT_BINARY_DIR}
-                             ${CMAKE_CURRENT_SOURCE_DIR}
-                             ${PROJECT_SOURCE_DIR})
-target_link_libraries(bsdtestharness
-                      PRIVATE
-                        bsdtests
-                        dispatch)
+# bsdtestharness needs posix_spawn, which WASI does not have. So
+# ${WASI_TEST_RUNNER} runs the WASI unit tests directly.
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  add_executable(bsdtestharness
+                 bsdtestharness.c)
+  target_include_directories(bsdtestharness
+                             PRIVATE
+                               ${CMAKE_CURRENT_BINARY_DIR}
+                               ${CMAKE_CURRENT_SOURCE_DIR}
+                               ${PROJECT_SOURCE_DIR})
+  target_link_libraries(bsdtestharness
+                        PRIVATE
+                          bsdtests
+                          dispatch)
+endif()
 
 function(add_unit_test name)
   set(options DISABLED_TEST)
@@ -103,13 +133,25 @@ function(add_unit_test name)
                           Threads::Threads
                           BlocksRuntime::BlocksRuntime)
   target_link_libraries(${name} PRIVATE bsdtests)
-  add_test(NAME ${name}
-           COMMAND bsdtestharness $<TARGET_FILE:${name}>)
-  set_tests_properties(${name}
-                       PROPERTIES
-                         TIMEOUT 120
-                         DEPENDS bsdtestharness
-                         WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+  if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+    add_test(NAME ${name}
+             COMMAND ${WASI_TEST_RUNNER} $<TARGET_FILE:${name}>)
+    set_tests_properties(${name}
+                         PROPERTIES
+                           TIMEOUT 120
+                           WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    if(NOT WASI_TEST_RUNNER_EXECUTABLE)
+      set_tests_properties(${name} PROPERTIES DISABLED TRUE)
+    endif()
+  else()
+    add_test(NAME ${name}
+             COMMAND bsdtestharness $<TARGET_FILE:${name}>)
+    set_tests_properties(${name}
+                         PROPERTIES
+                           TIMEOUT 120
+                           DEPENDS bsdtestharness
+                           WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+  endif()
   if(NOT leaks_EXECUTABLE)
     set_tests_properties(${name}
                          PROPERTIES
@@ -117,6 +159,50 @@ function(add_unit_test name)
   endif()
 endfunction()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  # The subset of the default C test suite that runs on single-threaded
+  # WASI. The other default tests need more than one thread:
+  #   apply: keeps worker threads spinning while dispatch_apply runs
+  #   overcommit: spins (while(1)) in every work item but the last, so it
+  #       needs concurrent worker threads to reach the item that stops it
+  #   context_for_key: blocks in dispatch_group_wait() inside a work item.
+  #       The single-threaded port rejects that as a certain deadlock.
+  #   timer_timeout: blocks the sole thread in sleep() and expects timers
+  #       to fire on worker threads meanwhile
+  #   io_muxed, io_net, io_pipe, io_pipe_close, select: single-threaded
+  #       WASI does not support file-descriptor dispatch sources
+  # The wasi_* tests cover what single-threaded WASI adds: a top-level wait
+  # pumps queued work, a wait inside a work item crashes, dispatch_main()
+  # runs work and crashes when idle, and the host event loop SPI.
+  set(DISPATCH_C_TESTS
+      api
+      debug
+      queue_finalizer
+      after
+      timer
+      timer_short
+      sema
+      timer_bit31
+      timer_bit63
+      timer_set_time
+      data
+      wasi_blocking_waits
+      wasi_nested_wait
+      wasi_nested_timed_wait
+      wasi_dispatch_main_work
+      wasi_dispatch_main_idle
+      wasi_deferred_submission
+      wasi_wall_timer
+      wasi_serial_lane_fairness
+      wasi_pumped_ownership
+      wasi_pumped_mgr_under_sync
+      wasi_wait_diagnostics
+      wasi_scheduler_no_pump
+      wasi_scheduler_pump
+      wasi_main_queue_perform
+      wasi_constructor_main_queue
+      wasi_alloc_failure)
+else()
 # Tests that reliably pass on all platforms
 set(DISPATCH_C_TESTS
     apply
@@ -139,6 +225,7 @@ set(DISPATCH_C_TESTS
     io_pipe
     io_pipe_close
     select)
+endif()
 
 if(UNIX)
   list(APPEND DISPATCH_C_TESTS timer_idle)
@@ -190,8 +277,39 @@ foreach(test ${DISPATCH_C_TESTS})
                   dispatch_${test}.c)
 endforeach()
 
-set_tests_properties(dispatch_io_pipe PROPERTIES TIMEOUT 15)
-set_tests_properties(dispatch_io_pipe_close PROPERTIES TIMEOUT 5)
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  # These tests pass when the guest crashes with the expected diagnostic.
+  # The exit status is ignored and the output must contain the message.
+  set_tests_properties(dispatch_wasi_nested_wait PROPERTIES
+    PASS_REGULAR_EXPRESSION "Deadlock: semaphore wait from a work item")
+  set_tests_properties(dispatch_wasi_dispatch_main_idle PROPERTIES
+    PASS_REGULAR_EXPRESSION
+      "dispatch_main\\(\\) with no work, timer, or event source")
+  set_tests_properties(dispatch_wasi_wait_diagnostics PROPERTIES
+    PASS_REGULAR_EXPRESSION
+      "Deadlock: dispatch_sync or dispatch_async_and_wait from a work item")
+  set_tests_properties(dispatch_wasi_scheduler_pump PROPERTIES
+    PASS_REGULAR_EXPRESSION "Scheduler ran Dispatch inline")
+  # Allocation failure must be a named crash, not a hang: the sole thread
+  # cannot free memory while it sleeps. A 16 MiB --max-memory lets the test
+  # reach the limit in milliseconds. One binary fails an object allocation,
+  # the other a continuation allocation.
+  add_unit_test(dispatch_wasi_alloc_failure_async
+                SOURCES
+                  dispatch_wasi_alloc_failure.c)
+  target_compile_definitions(dispatch_wasi_alloc_failure_async PRIVATE
+    ALLOC_FAILURE_ASYNC=1)
+  foreach(test dispatch_wasi_alloc_failure dispatch_wasi_alloc_failure_async)
+    target_link_options(${test} PRIVATE "-Wl,--max-memory=16777216")
+    set_tests_properties(${test} PROPERTIES
+      PASS_REGULAR_EXPRESSION "Out of memory")
+  endforeach()
+endif()
+
+if(NOT CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  set_tests_properties(dispatch_io_pipe PROPERTIES TIMEOUT 15)
+  set_tests_properties(dispatch_io_pipe_close PROPERTIES TIMEOUT 5)
+endif()
 if(LINUX)
   set_tests_properties(dispatch_read_hup PROPERTIES TIMEOUT 60)
 endif()
@@ -200,7 +318,7 @@ endif()
 add_unit_test(dispatch_c99 SOURCES dispatch_c99.c)
 add_unit_test(dispatch_plusplus SOURCES dispatch_plusplus.cpp)
 
-if (DISPATCH_USE_INTERNAL_WORKQUEUE)
+if (DISPATCH_USE_INTERNAL_WORKQUEUE AND NOT CMAKE_SYSTEM_NAME STREQUAL "WASI")
   add_unit_test(dispatch_workqueue
                 SOURCES
                   dispatch_workqueue.c)
@@ -210,7 +328,7 @@ endif()
 if(WIN32)
   target_link_libraries(dispatch_io_muxed PRIVATE WS2_32)
   target_link_libraries(dispatch_io_net PRIVATE WS2_32)
-else()
+elseif(NOT CMAKE_SYSTEM_NAME STREQUAL "WASI")
   # When dispatch_group is reenabled above, remove this
   if(EXTENDED_TEST_SUITE)
     target_link_libraries(dispatch_group PRIVATE m)
@@ -220,3 +338,9 @@ endif()
 
 # test-specific compile options
 set_target_properties(dispatch_c99 PROPERTIES C_STANDARD 99)
+
+# The focused WASI tests reuse bsdtests and add_unit_test, so they are added
+# after both are defined.
+if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
+  add_subdirectory(wasm)
+endif()
