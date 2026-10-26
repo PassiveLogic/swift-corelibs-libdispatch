@@ -28,7 +28,6 @@
 
 #include <bsdtests.h>
 #include "dispatch_test.h"
-#include "wasi-test.h"
 
 int
 main(void)
@@ -38,13 +37,13 @@ main(void)
 	dispatch_queue_t queue = dispatch_queue_create("wasi.wall.timer",
 			DISPATCH_QUEUE_SERIAL);
 	dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
-	uint64_t start = wasi_test_now_ns();
+	uint64_t start = dispatch_time(DISPATCH_TIME_NOW, 0);
 	dispatch_after(dispatch_walltime(NULL, 20 * NSEC_PER_MSEC), queue, ^{
 		dispatch_semaphore_signal(semaphore);
 	});
 	long result = dispatch_semaphore_wait(semaphore,
 			dispatch_time(DISPATCH_TIME_NOW, 500 * NSEC_PER_MSEC));
-	long elapsed_ms = (long)((wasi_test_now_ns() - start) / NSEC_PER_MSEC);
+	long elapsed_ms = (long)((dispatch_time(DISPATCH_TIME_NOW, 0) - start) / NSEC_PER_MSEC);
 	dispatch_release(semaphore);
 	dispatch_release(queue);
 	test_long("walltime timer signals before the 500 ms wait times out",

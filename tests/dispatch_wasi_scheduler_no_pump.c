@@ -24,7 +24,7 @@
  * DISPATCH_TIME_NOW wait. None of them runs the block that the poking
  * dispatch_async just recorded, the callback runs once for both
  * dispatch_async calls, and the host turn that the callback asked for then
- * runs both blocks. scheduler-pump.c pins the crash of each pumping call.
+ * runs both blocks. dispatch_wasi_scheduler_pump.c pins the crash of a pumping call.
  */
 #include <dispatch/dispatch.h>
 #include <dispatch/private.h>

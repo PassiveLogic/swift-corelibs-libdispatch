@@ -43,38 +43,38 @@ points), `private/private.h` (host event loop SPI), and `src/shims/lock.h`
 them:
 
 - `dispatch_async` never runs its block before the call returns; it runs at
-  the next pump point (`deferred-submission.c`).
+  the next pump point (`../dispatch_wasi_deferred_submission.c`).
 - A blocking wait never drains the main queue; with only main-queue work
   pending it crashes with a deadlock message that ends in
   `with only main-queue work`, and an expired wait runs no work
   (`timed-wait-main-backlog.c`, `expired-wait.c`).
 - Drains do not nest: blocks submitted from a running item run in the outer
   drain, FIFO within one queue, one item per step on a serial queue
-  (`deferred-submission.c`, `smoke.c`).
+  (`../dispatch_wasi_deferred_submission.c`, `smoke.c`).
 - Work submitted from inside a caller-held critical section never runs
   under that lock (`sync-nested-async.c`, `async-and-wait.c`,
   `specific-destructor.c`).
 - A pumped item runs with a worker identity and crashes with the deadlock
   diagnostic when it re-enters what the blocked frame holds
-  (`pumped-ownership.c`, `pumped-held-queue-sync.c`, `pumped-once-reenter.c`).
+  (`../dispatch_wasi_pumped_ownership.c`, `pumped-held-queue-sync.c`, `pumped-once-reenter.c`).
 - Nothing can hold the sole thread; every self-reposting shape yields after
   one item (the fairness tests, `reposting-workloop.c`,
   `self-triggering-source.c`).
 - A wait inside a running item pumps nothing: indefinite crashes at once,
-  timed sleeps to its own deadline (`nested-wait.c`, `nested-timed-wait.c`,
+  timed sleeps to its own deadline (`../dispatch_wasi_nested_wait.c`, `../dispatch_wasi_nested_timed_wait.c`,
   `wait-diagnostics.c`).
 - Hosts pass `consumes_scheduled_turn=true` on exactly one perform call in
   the turn the callback requested; timer-driven calls pass `false`. The
   scheduler callback must return without running Dispatch
-  (`host-event-loop.c`, `scheduler-pump.c`, `scheduler-no-pump.c`).
+  (`host-event-loop.c`, `scheduler-pump.c`, `../dispatch_wasi_scheduler_no_pump.c`).
 - Wall-clock timers follow host clock changes at the next wake
   (`wall-timer-forward-jump.c`, `wall-timer-backward-jump.c`). The
   remaining limitation: a change while the sole thread sleeps takes effect
   when that sleep ends; Darwin and Linux reposition the timer immediately.
 - `_libdispatch_init` runs at constructor priority 101, every crash reason
   reaches stderr regardless of `LIBDISPATCH_LOG`, and an allocation failure
-  is a named crash (`constructor-main-queue.c`, `crash-log-env.c`,
-  `alloc-failure.c`).
+  is a named crash (`../dispatch_wasi_constructor_main_queue.c`, `crash-log-env.c`,
+  `../dispatch_wasi_alloc_failure.c`).
 
 The backend is for plain, single-threaded `wasip1` only; wasm atomics or
 `-pthread` hit an `#error` in `event_wasi.c`. File-descriptor and signal
@@ -196,8 +196,12 @@ CTest runs three groups of WASI tests:
 
 `wasi-test.h` holds the shared helpers: `wasi_test_now_ns()` reads the
 uptime clock, and `wasi_test_pump()` is a top-level wait that drains
-everything the test submitted to the default root queue. The tests, by
-subject:
+everything the test submitted to the default root queue.
+
+The 16 tests that the upstream series keeps are `../dispatch_wasi_*.c`,
+registered in `tests/CMakeLists.txt` like the other upstream tests. This
+folder keeps the rest of the fork's regression suite. The list below names
+the moved tests by their new path. The tests, by subject:
 
 Ordering and fairness:
 
@@ -207,7 +211,7 @@ Ordering and fairness:
 - `sync-inline.c`, `main-queue-order.c` - inline `dispatch_sync` without a
   drain, and thread-bound main-queue FIFO order interleaved with a
   global-queue item.
-- `deferred-submission.c` - top-level async does not run before the call
+- `../dispatch_wasi_deferred_submission.c` - top-level async does not run before the call
   returns and runs at the next pump, a wait drains nested root submissions
   but leaves a nested main-queue item pending, group notify follows earlier
   root submissions, and the pending main-queue item runs first in
@@ -222,10 +226,10 @@ Ordering and fairness:
 - `specific-destructor.c` - replacing a queue-specific value runs the old
   value's destructor at a later pump, never on the submitting stack under
   the specifics lock.
-- `pumped-ownership.c` - a root item that a top-level wait pumps runs as a
+- `../dispatch_wasi_pumped_ownership.c` - a root item that a top-level wait pumps runs as a
   worker: it does not inherit the drain locks, thread frames, or main-queue
   ownership of the code that waits (`dispatch_assert_queue` checks).
-- `pumped-mgr-under-sync.c` - a top-level wait inside an uncontended
+- `../dispatch_wasi_pumped_mgr_under_sync.c` - a top-level wait inside an uncontended
   `dispatch_sync` block pumps two manager items. The manager drain does not
   narrow, although the interrupted sync frame belongs to the main queue.
 - `root-fairness.c` - a self-replenishing HIGH root does not starve a LOW
@@ -239,7 +243,7 @@ Ordering and fairness:
 - `main-source-handlers.c` - a source on the main queue applies all of its
   queued handler changes before it calls a handler. Its own drain does not
   narrow, so the second event calls the last handler that was set.
-- `serial-lane-fairness.c` - a serial queue that keeps re-posting to itself
+- `../dispatch_wasi_serial_lane_fairness.c` - a serial queue that keeps re-posting to itself
   runs one item per root step and is re-enqueued, so a timer, a LOW root
   item, and a main-queue item all run while it is busy; a lane targeting
   another serial queue behaves the same, and each lane keeps FIFO.
@@ -250,7 +254,7 @@ Ordering and fairness:
 
 Waits and deadlock diagnostics:
 
-- `blocking-waits.c` - blocking-wait contracts: `dispatch_block_wait` runs the
+- `../dispatch_wasi_blocking_waits.c` - blocking-wait contracts: `dispatch_block_wait` runs the
   queued block, `dispatch_group_wait(FOREVER)` returns once the group empties,
   and a timed semaphore wait that nothing signals times out only after its
   250 ms timeout, not early.
@@ -276,7 +280,7 @@ Waits and deadlock diagnostics:
   item, timer; a pending main-queue item is left alone) starts with no
   borrowed workloop handle and gives it back, for the plain, barrier, and
   private-data entry points.
-- `nested-wait.c`, `nested-timed-wait.c` - waits inside a drained work item
+- `../dispatch_wasi_nested_wait.c`, `../dispatch_wasi_nested_timed_wait.c` - waits inside a drained work item
   pump nothing: an indefinite semaphore wait crashes at once with
   `Deadlock: semaphore wait from a work item` after the marker the
   item prints, and a timed one sleeps to its own deadline, not to a later
@@ -309,10 +313,10 @@ Host event loop and scheduler SPI:
   `main-root-fairness.c`: a one-step host turn must not pick the main queue
   forever while a root item is pending. The command module stands in for the
   host and serves each scheduler request with `perform(1, true)`.
-- `main-queue-perform.c` - a main-queue drain that empties the queue leaves
+- `../dispatch_wasi_main_queue_perform.c` - a main-queue drain that empties the queue leaves
   no pending main work: perform returns `true` only when work remains, and
   one main-queue batch requests exactly one host turn.
-- `scheduler-no-pump.c` - calls that do not pump are allowed inside the
+- `../dispatch_wasi_scheduler_no_pump.c` - calls that do not pump are allowed inside the
   scheduler callback (`dispatch_async`, an uncontended `dispatch_sync`, a
   `DISPATCH_TIME_NOW` wait); none runs the block the poking `dispatch_async`
   recorded, the callback runs once for two pokes, and the requested turn
@@ -326,7 +330,7 @@ Host event loop and scheduler SPI:
 
 Startup, logging, and allocation:
 
-- `constructor-main-queue.c` - a default-priority client constructor sees an
+- `../dispatch_wasi_constructor_main_queue.c` - a default-priority client constructor sees an
   initialized libdispatch: it runs on the main queue, can post deferred
   main-queue work and wait for global-queue work, and the deferred block
   runs on the main queue under `dispatch_main()`.
@@ -336,16 +340,16 @@ Startup, logging, and allocation:
   with `LIBDISPATCH_LOG=file` (under Node) the over-resume reason reaches
   stderr while the log goes to the preopened `/var/tmp`. The guest sets the
   variable itself because the runner starts it with an empty environment.
-- `alloc-failure.c` - builds two crash binaries linked with a 16 MiB
+- `../dispatch_wasi_alloc_failure.c` - builds two crash binaries linked with a 16 MiB
   `--max-memory`: after the test fills the heap, an object allocation
   (`dispatch_queue_create`) and a continuation allocation (`dispatch_async_f`,
   `ALLOC_FAILURE_ASYNC=1`) crash with `Out of memory` after the `heap exhausted` marker.
 
 `dispatch_main()` paths:
 
-- `dispatch-main-work.c` - `dispatch_main()` runs main-queue work scheduled
+- `../dispatch_wasi_dispatch_main_work.c` - `dispatch_main()` runs main-queue work scheduled
   with `dispatch_after`.
-- `dispatch-main-idle.c`, `dispatch-main-drain-idle.c` - `dispatch_main()`
+- `../dispatch_wasi_dispatch_main_idle.c`, `dispatch-main-drain-idle.c` - `dispatch_main()`
   with nothing to run crashes with
   `dispatch_main() with no work, timer, or event source` instead of
   parking forever: at once when nothing was ever queued, and after the only
@@ -371,7 +375,7 @@ API surface:
   the on-queue checks print. It guards the tid-vs-`DLOCK_OWNER_MASK`
   encoding in `shims/lock.h` (a constant tid that masks to zero makes every
   unlocked queue look owned by the current thread).
-- `wall-timer.c` - a `dispatch_after` with a `dispatch_walltime()` deadline
+- `../dispatch_wasi_wall_timer.c` - a `dispatch_after` with a `dispatch_walltime()` deadline
   fires on a serial queue while main blocks in a timed semaphore wait, not
   before its 20 ms deadline.
 - `wall-timer-forward-jump.c`, `wall-timer-backward-jump.c` - run under Node
@@ -389,7 +393,7 @@ API surface:
 The three runner self-checks (`dispatch_wasi_runner_wrong_mode`,
 `dispatch_wasi_runner_missing_diagnostic`,
 `dispatch_wasi_runner_missing_marker`) run `run-wasi-test.mjs` against
-`smoke.c` and `dispatch-main-idle.c` through `expect-runner-failure.cmake`
+`smoke.c` and `../dispatch_wasi_dispatch_main_idle.c` through `expect-runner-failure.cmake`
 and pass only when the runner fails with its own failure line: a successful
 guest declared as a crash, a crash without the expected diagnostic, and a
 crash without an expected marker.

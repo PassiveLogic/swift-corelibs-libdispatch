@@ -32,7 +32,6 @@
 
 #include <bsdtests.h>
 #include "dispatch_test.h"
-#include "wasi-test.h"
 
 int
 main(void)
@@ -61,10 +60,10 @@ main(void)
 			group_ran, 1);
 
 	dispatch_semaphore_t unsignaled = dispatch_semaphore_create(0);
-	uint64_t start = wasi_test_now_ns();
+	uint64_t start = dispatch_time(DISPATCH_TIME_NOW, 0);
 	result = dispatch_semaphore_wait(unsignaled,
 			dispatch_time(DISPATCH_TIME_NOW, 250 * NSEC_PER_MSEC));
-	long elapsed_ms = (long)((wasi_test_now_ns() - start) / NSEC_PER_MSEC);
+	long elapsed_ms = (long)((dispatch_time(DISPATCH_TIME_NOW, 0) - start) / NSEC_PER_MSEC);
 	test_long("timed semaphore wait with no signal times out", !result, 0);
 	test_long_greater_than_or_equal("timed semaphore wait lasts at least "
 			"its 250 ms timeout", elapsed_ms, 250);

@@ -31,7 +31,6 @@
 
 #include <bsdtests.h>
 #include "dispatch_test.h"
-#include "wasi-test.h"
 
 // The test fails when a phase runs longer than this. A fair drain finishes
 // each phase soon after its 10 ms timer fires.
@@ -99,7 +98,7 @@ lane_item(void *context)
 		test_stop();
 	}
 	if ((lane_count & CLOCK_CHECK_MASK) == 0 &&
-			wasi_test_now_ns() - phase_start_ns >
+			dispatch_time(DISPATCH_TIME_NOW, 0) - phase_start_ns >
 			LANE_TIME_LIMIT_NS) {
 		// the lane held the thread: the check for each item that did
 		// not run fails
@@ -116,7 +115,7 @@ start_phase(int next_phase)
 	timer_fired = low_ran = main_ran = 0;
 	lane_count = last_seq = 0;
 	out_of_order = 0;
-	phase_start_ns = wasi_test_now_ns();
+	phase_start_ns = dispatch_time(DISPATCH_TIME_NOW, 0);
 	if (phase == 1) {
 		lane = dispatch_queue_create("wasi.serial_lane",
 				DISPATCH_QUEUE_SERIAL);
