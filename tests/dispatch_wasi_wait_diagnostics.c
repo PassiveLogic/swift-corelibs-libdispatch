@@ -1,21 +1,13 @@
 /*
- * Copyright (c) 2026 Apple Inc. All rights reserved.
+ * This source file is part of the Swift.org open source project
  *
- * @APPLE_APACHE_LICENSE_HEADER_START@
+ * Copyright (c) 2026 Apple Inc. and the Swift project authors
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under Apache License v2.0 with Runtime Library Exception
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * See https://swift.org/LICENSE.txt for license information
+ * See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
 /*
@@ -23,6 +15,10 @@
  * blocked: a dispatch_sync that waits behind queued work, inside a drained
  * work item, so nothing can satisfy it. dispatch_wasi_nested_wait.c covers
  * the dispatch_semaphore_wait case.
+ *
+ * Built with WAIT_DIAGNOSTICS_MAIN_ONLY, it covers the other refusal: a
+ * top-level indefinite wait that only main-queue work could satisfy. Waits
+ * never drain the main queue, so the wait crashes instead of reordering.
  */
 #include <dispatch/dispatch.h>
 #include <stdio.h>
@@ -30,6 +26,17 @@
 int
 main(void)
 {
+#if WAIT_DIAGNOSTICS_MAIN_ONLY
+	dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+	dispatch_async(dispatch_get_main_queue(), ^{
+		dispatch_semaphore_signal(sema);
+	});
+	puts("top-level wait starting");
+	fflush(stdout);
+	dispatch_semaphore_wait(sema, DISPATCH_TIME_FOREVER);
+	puts("top-level wait returned");
+	return 1;
+#else
 	dispatch_queue_t global = dispatch_get_global_queue(
 			DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
 	dispatch_queue_t queue = dispatch_queue_create("wasi.wait.diag",
@@ -41,4 +48,5 @@ main(void)
 		dispatch_sync(queue, ^{});
 	});
 	dispatch_main();
+#endif
 }

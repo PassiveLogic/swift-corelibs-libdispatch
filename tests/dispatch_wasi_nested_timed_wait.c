@@ -1,29 +1,21 @@
 /*
- * Copyright (c) 2026 Apple Inc. All rights reserved.
+ * This source file is part of the Swift.org open source project
  *
- * @APPLE_APACHE_LICENSE_HEADER_START@
+ * Copyright (c) 2026 Apple Inc. and the Swift project authors
  *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
+ * Licensed under Apache License v2.0 with Runtime Library Exception
  *
- *     http://www.apache.org/licenses/LICENSE-2.0
+ * See https://swift.org/LICENSE.txt for license information
+ * See https://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- * @APPLE_APACHE_LICENSE_HEADER_END@
  */
 
 /*
  * A timed semaphore wait issued from inside a drained work item pumps
  * nothing: with nobody left to signal it, it sleeps to its own 200 ms
  * deadline and reports a timeout. A 10 s timer on the same serial queue
- * must not extend that wait; the 5 s test timeout catches a wait that sleeps
- * to the timer. The work item itself is pumped by a top-level wait in main.
+ * must not extend that wait, so the wait must end well before the timer.
+ * The work item itself is pumped by a top-level wait in main.
  */
 #include <dispatch/dispatch.h>
 #include <stdint.h>
@@ -58,6 +50,8 @@ main(void)
 	test_long("nested timed semaphore wait times out", !result, 0);
 	test_long_greater_than_or_equal("nested timed semaphore wait sleeps to "
 			"its 200 ms deadline", elapsed_ms, 200);
+	test_long_less_than("nested timed semaphore wait does not sleep to the "
+			"10 s timer", elapsed_ms, 5000);
 	// the pending 10 s timer keeps its own reference to the queue
 	dispatch_release(semaphore);
 	dispatch_release(done);

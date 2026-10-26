@@ -284,6 +284,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "WASI")
   set_tests_properties(dispatch_wasi_wait_diagnostics PROPERTIES
     PASS_REGULAR_EXPRESSION
       "Deadlock: dispatch_sync or dispatch_async_and_wait from a work item")
+  add_unit_test(dispatch_wasi_wait_diagnostics_main_only
+                SOURCES
+                  dispatch_wasi_wait_diagnostics.c)
+  target_compile_definitions(dispatch_wasi_wait_diagnostics_main_only PRIVATE
+    WAIT_DIAGNOSTICS_MAIN_ONLY=1)
+  set_tests_properties(dispatch_wasi_wait_diagnostics_main_only PROPERTIES
+    PASS_REGULAR_EXPRESSION
+      "Deadlock: semaphore wait with only main-queue work")
 endif()
 
 if(NOT CMAKE_SYSTEM_NAME STREQUAL "WASI")
